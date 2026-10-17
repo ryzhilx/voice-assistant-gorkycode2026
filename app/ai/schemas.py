@@ -13,6 +13,7 @@ class AIAction(str, Enum):
     GET_SCHEDULE = "get_schedule"
     SEARCH_RECORDS = "search_records"
     ASK_CLARIFICATION = "ask_clarification"
+    CHAT = "chat"
     UNKNOWN = "unknown"
 
 @dataclass

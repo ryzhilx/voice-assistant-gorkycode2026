@@ -44,6 +44,13 @@ class LLMOrchestrator:
     def _resolve_clarification(self, answer_text: str, context: Dict[str, Any]) -> AIResponse:
         draft = context.get("draft_data", {})
         missing_slot = context.get("awaiting_slot")
+        low = answer_text.lower().strip()
+
+        if low in ["отмена", "не надо", "стоп", "забудь", "хватит", "нет", "отменить"]:
+            return AIResponse(
+                action=AIAction.CHAT,
+                params={"reply": "Действие отменено."}
+            )
 
         if missing_slot == "time":
             time_match = re.search(r"(\d{1,2})[:.-](\d{2})|в\s*(\d{1,2})", answer_text, re.IGNORECASE)
@@ -52,24 +59,42 @@ class LLMOrchestrator:
                 if time_match.group(1) and time_match.group(2):
                     h = int(time_match.group(1))
                     m = int(time_match.group(2))
-                    extracted_time = f"{h:02d}:{m:02d}"
+                    if 0 <= h <= 23 and 0 <= m <= 59:
+                        extracted_time = f"{h:02d}:{m:02d}"
                 elif time_match.group(3):
                     h = int(time_match.group(3))
-                    extracted_time = f"{h:02d}:00"
+                    if 0 <= h <= 23:
+                        extracted_time = f"{h:02d}:00"
 
             if extracted_time:
                 draft["start_time"] = extracted_time
+                if not draft.get("start_date"):
+                    now = datetime.datetime.now()
+                    draft["start_date"] = str(now.date() + datetime.timedelta(days=1))
+                if not draft.get("title"):
+                    draft["title"] = "Встреча"
                 return AIResponse(
                     action=AIAction.CREATE_MEETING,
                     params=draft,
                     user_reply=f"Поставил встречу '{draft.get('title')}' на {draft.get('start_date')} в {extracted_time}."
                 )
 
+            if time_match and not extracted_time:
+                return AIResponse(
+                    action=AIAction.ASK_CLARIFICATION,
+                    params={
+                        "missing_slot": "time",
+                        "question": "Кажется, время указано с ошибкой. Напишите время в формате ЧЧ:ММ (например, 15:00 или 18:30):",
+                        "draft_data": draft
+                    }
+                )
+
+        title = draft.get("title") or "Встреча"
         return AIResponse(
             action=AIAction.ASK_CLARIFICATION,
             params={
                 "missing_slot": "time",
-                "question": f"На какое время поставить встречу '{draft.get('title')}'?",
+                "question": f"На какое время поставить встречу «{title}»?",
                 "draft_data": draft
             }
         )
@@ -96,10 +121,12 @@ class LLMOrchestrator:
                 match = re.search(r"\{.*\}", raw_text, re.DOTALL)
                 if match:
                     parsed = json.loads(match.group(0))
-                    return AIResponse(
-                        action=AIAction(parsed.get("action")),
-                        params=parsed.get("params", {})
-                    )
+                    action_val = parsed.get("action")
+                    if action_val in [a.value for a in AIAction]:
+                        return AIResponse(
+                            action=AIAction(action_val),
+                            params=parsed.get("params", {})
+                        )
         return None
 
     async def _call_gigachat(self, text: str) -> Optional[AIResponse]:
@@ -107,7 +134,32 @@ class LLMOrchestrator:
 
     def _heuristic_fallback(self, text: str) -> AIResponse:
         now = datetime.datetime.now()
-        low = text.lower()
+        low = text.lower().strip()
+
+        # Chit-chat & Greetings
+        if low in ["привет", "здравствуй", "добрый день", "добрый вечер", "доброе утро", "хай", "приветствую", "салют"]:
+            return AIResponse(
+                action=AIAction.CHAT,
+                params={"reply": "Привет! Я голосовой ассистент. Могу записать задачу, назначить встречу или показать расписание."}
+            )
+
+        if any(w in low for w in ["что ты умеешь", "а чем можешь", "чем можешь", "помощь", "помоги", "что умеешь", "как пользоваться"]):
+            return AIResponse(
+                action=AIAction.CHAT,
+                params={"reply": "Я помогаю с личными делами: создаю задачи и напоминания, планирую встречи, показываю расписание и ищу старые события по смыслу."}
+            )
+
+        if any(w in low for w in ["на какой нейросети", "какая нейросеть", "какая модель", "ты кто", "кто ты"]):
+            return AIResponse(
+                action=AIAction.CHAT,
+                params={"reply": "Я работаю на базе YandexGPT для понимания речи и Yandex SpeechKit для синтеза и распознавания голоса."}
+            )
+
+        if low in ["спасибо", "благодарю", "отлично", "супер", "понял", "ясно"]:
+            return AIResponse(
+                action=AIAction.CHAT,
+                params={"reply": "Всегда пожалуйста! Если понадобится что-то запланировать — обращайтесь."}
+            )
 
         # Schedule
         if any(w in low for w in ["что у меня", "какие планы", "покажи встречи", "есть ли у меня", "какие задачи", "что запланировано"]):

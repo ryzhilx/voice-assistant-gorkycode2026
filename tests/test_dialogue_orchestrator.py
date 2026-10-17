@@ -84,5 +84,27 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         self.llm.parse_intent.assert_awaited_with("Напомни купить хлеб", None)
         self.assertTrue(self.orch.has_pending(1))
 
+    async def test_chat_intent(self):
+        self.llm.parse_intent.return_value = AIResponse(
+            action=AIAction.CHAT,
+            params={"reply": "Привет! Чем могу помочь?"}
+        )
+        reply = await self.orch.handle_text(CHAT, "Привет")
+        self.assertEqual(reply.text, "Привет! Чем могу помочь?")
+        self.assertFalse(self.orch.has_pending(CHAT))
+
+    async def test_cancel_drops_pending(self):
+        self.llm.parse_intent.return_value = clarification()
+        await self.orch.handle_text(CHAT, "Поставь встречу с Иваном завтра")
+        self.assertTrue(self.orch.has_pending(CHAT))
+
+        self.llm.parse_intent.return_value = AIResponse(
+            action=AIAction.CHAT,
+            params={"reply": "Действие отменено."}
+        )
+        reply = await self.orch.handle_text(CHAT, "Отмена")
+        self.assertIn("отменено", reply.text)
+        self.assertFalse(self.orch.has_pending(CHAT))
+
 if __name__ == "__main__":
     unittest.main()

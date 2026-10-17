@@ -56,6 +56,10 @@ class DialogueOrchestrator:
 
         self.reset(chat_id)
 
+        if result.action == AIAction.CHAT:
+            reply_text = result.params.get("reply") or result.user_reply or "Чем я могу вам помочь?"
+            return Reply(reply_text)
+
         if result.action == AIAction.CREATE_TASK:
             title = result.params.get("title", "Задача")
             due_date = result.params.get("due_date")

@@ -11,6 +11,7 @@ def make_message(text=None, chat_id=7):
     msg.chat.id = chat_id
     msg.voice = MagicMock()
     msg.answer = AsyncMock()
+    msg.answer_voice = AsyncMock()
     return msg
 
 
@@ -20,7 +21,10 @@ class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
             handlers, "orchestrator",
             MagicMock(handle_text=AsyncMock(return_value=Reply("ответ")), reset=MagicMock()),
         ).start()
-        self.stt = patch.object(handlers, "stt", MagicMock(speech_to_text=AsyncMock())).start()
+        self.stt = patch.object(
+            handlers, "stt",
+            MagicMock(speech_to_text=AsyncMock(), text_to_speech=AsyncMock(return_value=None))
+        ).start()
         self.addCleanup(patch.stopall)
 
     async def test_text_is_forwarded_to_orchestrator_and_reply_sent(self):

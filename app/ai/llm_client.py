@@ -6,58 +6,42 @@ import httpx
 from typing import Dict, Any, Optional
 from app.config import settings
 from app.ai.schemas import AIResponse, AIAction
-from app.ai.prompts import get_system_prompt, FEW_SHOT_EXAMPLES
+from app.ai.prompts import get_system_prompt
 
 logger = logging.getLogger(__name__)
 
 class LLMOrchestrator:
-    """
-    Оркестратор взаимодействия с LLM (YandexGPT / GigaChat / Эвристический офлайн-движок).
-    Обеспечивает устойчивость: если ключи API еще не заданы,
-    автоматически срабатывает встроенный парсер для тестирования всех 4 сценариев из ТЗ.
-    """
-
     def __init__(self):
         self.yandex_api_key = settings.yandex_api_key
         self.yandex_folder_id = settings.yandex_folder_id
         self.gigachat_credentials = settings.gigachat_credentials
 
     async def parse_intent(self, text: str, context: Optional[Dict[str, Any]] = None) -> AIResponse:
-        """
-        Главная точка входа: принимает текст пользователя и возвращает AIResponse.
-        """
         text_clean = text.strip()
-        logger.info(f"AI Parse intent for input: '{text_clean}'")
+        logger.debug("Parsing intent: %s", text_clean)
 
-        # Если находимся в состоянии уточняющего диалога (context содержит draft_data)
         if context and context.get("awaiting_slot"):
             return self._resolve_clarification(text_clean, context)
 
-        # 1. Попытка вызвать YandexGPT, если настроен
         if self.yandex_api_key and self.yandex_folder_id:
             try:
                 res = await self._call_yandex_gpt(text_clean)
                 if res:
                     return res
             except Exception as e:
-                logger.error(f"YandexGPT API error: {e}, falling back to rule engine")
+                logger.warning("YandexGPT request failed: %s", e)
 
-        # 2. Попытка вызвать GigaChat, если настроен
         if self.gigachat_credentials:
             try:
                 res = await self._call_gigachat(text_clean)
                 if res:
                     return res
             except Exception as e:
-                logger.error(f"GigaChat API error: {e}, falling back to rule engine")
+                logger.warning("GigaChat request failed: %s", e)
 
-        # 3. Детерминированный офлайн-движок (работает прямо из коробки)
         return self._heuristic_fallback(text_clean)
 
     def _resolve_clarification(self, answer_text: str, context: Dict[str, Any]) -> AIResponse:
-        """
-        Разрешает контекст уточняющего диалога (например, пользователь ответил временем: 'в 15:00').
-        """
         draft = context.get("draft_data", {})
         missing_slot = context.get("awaiting_slot")
 
@@ -78,21 +62,19 @@ class LLMOrchestrator:
                 return AIResponse(
                     action=AIAction.CREATE_MEETING,
                     params=draft,
-                    user_reply=f"Отлично! Поставил встречу '{draft.get('title')}' на {draft.get('start_date')} в {extracted_time}."
+                    user_reply=f"Поставил встречу '{draft.get('title')}' на {draft.get('start_date')} в {extracted_time}."
                 )
 
-        # Если не удалось распознать время из ответа
         return AIResponse(
             action=AIAction.ASK_CLARIFICATION,
             params={
                 "missing_slot": "time",
-                "question": f"Пожалуйста, укажите точное время (например, 15:00 или в 3 дня) для встречи '{draft.get('title')}':",
+                "question": f"На какое время поставить встречу '{draft.get('title')}'?",
                 "draft_data": draft
             }
         )
 
     async def _call_yandex_gpt(self, text: str) -> Optional[AIResponse]:
-        """Интеграция с YandexGPT API."""
         url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
         headers = {
             "Authorization": f"Api-Key {self.yandex_api_key}",
@@ -111,29 +93,23 @@ class LLMOrchestrator:
             if resp.status_code == 200:
                 data = resp.json()
                 raw_text = data["result"]["alternatives"][0]["message"]["text"]
-                # Очистка JSON
-                raw_text = re.sub(r"^```json\s*|\s*```$", "", raw_text.strip())
-                parsed = json.loads(raw_text)
-                return AIResponse(
-                    action=AIAction(parsed.get("action")),
-                    params=parsed.get("params", {})
-                )
+                match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+                if match:
+                    parsed = json.loads(match.group(0))
+                    return AIResponse(
+                        action=AIAction(parsed.get("action")),
+                        params=parsed.get("params", {})
+                    )
         return None
 
     async def _call_gigachat(self, text: str) -> Optional[AIResponse]:
-        """Интеграция с GigaChat API."""
-        # Реализация обращения к GigaChat completions
         return None
 
     def _heuristic_fallback(self, text: str) -> AIResponse:
-        """
-        Высокоточный офлайн-парсер русского языка для демонстрации и прохождения
-        всех тестов из ТЗ даже без внешних ключей API.
-        """
         now = datetime.datetime.now()
         low = text.lower()
 
-        # 1. Сценарий: Получение расписания ("что у меня сегодня", "какие планы на завтра", "встречи на эту неделю")
+        # Schedule
         if any(w in low for w in ["что у меня", "какие планы", "покажи встречи", "есть ли у меня", "какие задачи", "что запланировано"]):
             start_date = now.date()
             end_date = now.date()
@@ -159,7 +135,7 @@ class LLMOrchestrator:
                 }
             )
 
-        # 2. Сценарий: Поиск старых записей ("найди задачу про...", "когда была встреча с...")
+        # Search
         if any(w in low for w in ["найди", "поищи", "когда у меня была", "когда была", "я когда-то ставил"]):
             record_type = "all"
             if "встреч" in low:
@@ -167,7 +143,6 @@ class LLMOrchestrator:
             elif "задач" in low:
                 record_type = "tasks"
 
-            # Очистка стоп-слов с учетом дефисов, границ слов и знаков препинания
             clean = re.sub(r"\b(найди|поищи|задачу|задачи|встречу|встречи|встреча|про|по|с|когда-то|когда|у|меня|была|были|было|я|ставил|ставила|ее|его|их|мне|то)\b|[-?.,!]", " ", low)
             query = " ".join(clean.split()).strip()
             return AIResponse(
@@ -178,7 +153,6 @@ class LLMOrchestrator:
                 }
             )
 
-        # Определение даты (сегодня, завтра, в пятницу и т.д.)
         target_date = now.date()
         if "завтра" in low:
             target_date = now.date() + datetime.timedelta(days=1)
@@ -190,7 +164,6 @@ class LLMOrchestrator:
         elif "до конца недели" in low:
             target_date = now.date() + datetime.timedelta(days=(6 - now.weekday()))
 
-        # Определение времени (например "в 15:00", "в 10 утра", "через два часа")
         target_time = None
         time_match = re.search(r"(\d{1,2})[:.-](\d{2})|в\s*(\d{1,2})\s*(утра|дня|вечера)?", low)
         if time_match:
@@ -208,9 +181,8 @@ class LLMOrchestrator:
             new_dt = now + datetime.timedelta(hours=2)
             target_time = new_dt.strftime("%H:%M")
 
-        # 3. Сценарий: Встреча (наличие слова "встреча", "созвон")
+        # Meetings
         if "встреч" in low or "созвон" in low:
-            # Извлечение темы / участников
             title = text.strip()
             for prefix in ["добавь встречу с", "поставь встречу с", "добавь встречу", "поставь встречу", "у меня встреча с", "встреча с"]:
                 if prefix in low:
@@ -218,11 +190,9 @@ class LLMOrchestrator:
                     title = "Встреча с " + text[idx:].strip()
                     break
 
-            # Очистка названия от времени/даты
             title_clean = re.sub(r"завтра|сегодня|послезавтра|в \d{1,2}[:.]\d{2}|в \d{1,2}|в пятницу", "", title, flags=re.IGNORECASE).strip()
             title_clean = title_clean or "Встреча"
 
-            # ПРОВЕРКА УТОЧНЯЮЩЕГО ДИАЛОГА: если время не указано, вызываем ask_clarification!
             if not target_time:
                 return AIResponse(
                     action=AIAction.ASK_CLARIFICATION,
@@ -247,7 +217,7 @@ class LLMOrchestrator:
                 }
             )
 
-        # 4. Сценарий: Задача или напоминание
+        # Tasks
         is_reminder = "напомни" in low
         clean_title = re.sub(
             r"напомни мне|напомни|поставь задачу|нужно|надо|завтра|сегодня|послезавтра|до конца недели|в пятницу|в \d{1,2}(:\d{2})?(\s*утра|\s*вечера|\s*дня)?",

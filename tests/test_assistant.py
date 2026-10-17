@@ -27,6 +27,13 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.action, AIAction.CREATE_MEETING)
         self.assertEqual(res.params.get("start_time"), "02:39")
 
+    async def test_heuristic_fallback_exact_time(self):
+        self.orchestrator.yandex_api_key = None
+        self.orchestrator.yandex_folder_id = None
+        res = await self.orchestrator.parse_intent("встреча сегодня в 2:39")
+        self.assertEqual(res.action, AIAction.CREATE_MEETING)
+        self.assertEqual(res.params.get("start_time"), "02:39")
+
     async def test_meeting_clarification_dialog(self):
         # Step 1: no time specified -> triggers clarification
         step1 = await self.orchestrator.parse_intent("Поставь встречу с Иваном завтра")

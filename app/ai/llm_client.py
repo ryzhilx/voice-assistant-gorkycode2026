@@ -41,6 +41,42 @@ class LLMOrchestrator:
 
         return self._heuristic_fallback(text_clean)
 
+    @staticmethod
+    def _parse_time(text: str) -> Optional[str]:
+        low = text.lower().strip()
+        time_match = re.search(
+            r"(?:в\s*)?(\d{1,2})[:.-](\d{2})(?:\s*(утра|дня|вечера))?|в\s*(\d{1,2})(?:\s*(утра|дня|вечера))?|(\d{1,2})\s*(утра|дня|вечера)",
+            low
+        )
+        if time_match:
+            if time_match.group(1) and time_match.group(2):
+                h = int(time_match.group(1))
+                m = int(time_match.group(2))
+                ampm = time_match.group(3)
+                if ampm in ["дня", "вечера"] and h < 12:
+                    h += 12
+                if 0 <= h <= 23 and 0 <= m <= 59:
+                    return f"{h:02d}:{m:02d}"
+            elif time_match.group(4):
+                h = int(time_match.group(4))
+                ampm = time_match.group(5)
+                if ampm in ["дня", "вечера"] and h < 12:
+                    h += 12
+                if 0 <= h <= 23:
+                    return f"{h:02d}:00"
+            elif time_match.group(6):
+                h = int(time_match.group(6))
+                ampm = time_match.group(7)
+                if ampm in ["дня", "вечера"] and h < 12:
+                    h += 12
+                if 0 <= h <= 23:
+                    return f"{h:02d}:00"
+        elif re.match(r"^\s*(\d{1,2})\s*$", low):
+            h = int(low.strip())
+            if 0 <= h <= 23:
+                return f"{h:02d}:00"
+        return None
+
     def _resolve_clarification(self, answer_text: str, context: Dict[str, Any]) -> AIResponse:
         draft = dict(context.get("draft_data", {}))
         missing_slot = context.get("awaiting_slot")
@@ -88,39 +124,7 @@ class LLMOrchestrator:
             draft["start_date"] = str(now.date())
 
         if missing_slot == "time":
-            time_match = re.search(
-                r"(\d{1,2})[:.-](\d{2})(\s*(утра|дня|вечера))?|в\s*(\d{1,2})\s*(утра|дня|вечера)?|(\d{1,2})\s*(утра|дня|вечера)",
-                low
-            )
-            extracted_time = None
-            if time_match:
-                if time_match.group(1) and time_match.group(2):
-                    h = int(time_match.group(1))
-                    m = int(time_match.group(2))
-                    ampm = time_match.group(4)
-                    if ampm in ["дня", "вечера"] and h < 12:
-                        h += 12
-                    if 0 <= h <= 23 and 0 <= m <= 59:
-                        extracted_time = f"{h:02d}:{m:02d}"
-                elif time_match.group(5):
-                    h = int(time_match.group(5))
-                    ampm = time_match.group(6)
-                    if ampm in ["дня", "вечера"] and h < 12:
-                        h += 12
-                    if 0 <= h <= 23:
-                        extracted_time = f"{h:02d}:00"
-                elif time_match.group(7):
-                    h = int(time_match.group(7))
-                    ampm = time_match.group(8)
-                    if ampm in ["дня", "вечера"] and h < 12:
-                        h += 12
-                    if 0 <= h <= 23:
-                        extracted_time = f"{h:02d}:00"
-            elif re.match(r"^\s*(\d{1,2})\s*$", low):
-                h = int(low.strip())
-                if 0 <= h <= 23:
-                    extracted_time = f"{h:02d}:00"
-
+            extracted_time = self._parse_time(answer_text)
             if extracted_time:
                 draft["start_time"] = extracted_time
                 if not draft.get("title"):
@@ -131,7 +135,7 @@ class LLMOrchestrator:
                     user_reply=f"Поставил встречу '{draft.get('title')}' на {draft.get('start_date')} в {extracted_time}."
                 )
 
-            if time_match and not extracted_time:
+            if re.search(r"\d{1,2}[:.-]\d{2}", answer_text):
                 return AIResponse(
                     action=AIAction.ASK_CLARIFICATION,
                     params={
@@ -297,20 +301,8 @@ class LLMOrchestrator:
         elif "до конца недели" in low:
             target_date = now.date() + datetime.timedelta(days=(6 - now.weekday()))
 
-        target_time = None
-        time_match = re.search(r"(\d{1,2})[:.-](\d{2})|в\s*(\d{1,2})\s*(утра|дня|вечера)?", low)
-        if time_match:
-            if time_match.group(1) and time_match.group(2):
-                h = int(time_match.group(1))
-                m = int(time_match.group(2))
-                target_time = f"{h:02d}:{m:02d}"
-            elif time_match.group(3):
-                h = int(time_match.group(3))
-                ampm = time_match.group(4)
-                if ampm in ["дня", "вечера"] and h < 12:
-                    h += 12
-                target_time = f"{h:02d}:00"
-        elif "через два часа" in low:
+        target_time = self._parse_time(low)
+        if not target_time and "через два часа" in low:
             new_dt = now + datetime.timedelta(hours=2)
             target_time = new_dt.strftime("%H:%M")
 

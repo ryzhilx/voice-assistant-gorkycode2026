@@ -42,7 +42,7 @@ class LLMOrchestrator:
         return self._heuristic_fallback(text_clean)
 
     def _resolve_clarification(self, answer_text: str, context: Dict[str, Any]) -> AIResponse:
-        draft = context.get("draft_data", {})
+        draft = dict(context.get("draft_data", {}))
         missing_slot = context.get("awaiting_slot")
         low = answer_text.lower().strip()
 
@@ -52,25 +52,77 @@ class LLMOrchestrator:
                 params={"reply": "Действие отменено."}
             )
 
+        now = datetime.datetime.now()
+        date_in_answer = None
+        if "сегодня" in low:
+            date_in_answer = now.date()
+        elif "послезавтра" in low:
+            date_in_answer = now.date() + datetime.timedelta(days=2)
+        elif "завтра" in low:
+            date_in_answer = now.date() + datetime.timedelta(days=1)
+        elif "в пятницу" in low:
+            days_ahead = (4 - now.weekday() + 7) % 7
+            date_in_answer = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
+        elif "в субботу" in low:
+            days_ahead = (5 - now.weekday() + 7) % 7
+            date_in_answer = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
+        elif "в воскресенье" in low:
+            days_ahead = (6 - now.weekday() + 7) % 7
+            date_in_answer = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
+        elif "в понедельник" in low:
+            days_ahead = (0 - now.weekday() + 7) % 7
+            date_in_answer = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
+        elif "во вторник" in low:
+            days_ahead = (1 - now.weekday() + 7) % 7
+            date_in_answer = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
+        elif "в среду" in low:
+            days_ahead = (2 - now.weekday() + 7) % 7
+            date_in_answer = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
+        elif "в четверг" in low:
+            days_ahead = (3 - now.weekday() + 7) % 7
+            date_in_answer = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
+
+        if date_in_answer:
+            draft["start_date"] = str(date_in_answer)
+        elif not draft.get("start_date"):
+            draft["start_date"] = str(now.date())
+
         if missing_slot == "time":
-            time_match = re.search(r"(\d{1,2})[:.-](\d{2})|в\s*(\d{1,2})", answer_text, re.IGNORECASE)
+            time_match = re.search(
+                r"(\d{1,2})[:.-](\d{2})(\s*(утра|дня|вечера))?|в\s*(\d{1,2})\s*(утра|дня|вечера)?|(\d{1,2})\s*(утра|дня|вечера)",
+                low
+            )
             extracted_time = None
             if time_match:
                 if time_match.group(1) and time_match.group(2):
                     h = int(time_match.group(1))
                     m = int(time_match.group(2))
+                    ampm = time_match.group(4)
+                    if ampm in ["дня", "вечера"] and h < 12:
+                        h += 12
                     if 0 <= h <= 23 and 0 <= m <= 59:
                         extracted_time = f"{h:02d}:{m:02d}"
-                elif time_match.group(3):
-                    h = int(time_match.group(3))
+                elif time_match.group(5):
+                    h = int(time_match.group(5))
+                    ampm = time_match.group(6)
+                    if ampm in ["дня", "вечера"] and h < 12:
+                        h += 12
                     if 0 <= h <= 23:
                         extracted_time = f"{h:02d}:00"
+                elif time_match.group(7):
+                    h = int(time_match.group(7))
+                    ampm = time_match.group(8)
+                    if ampm in ["дня", "вечера"] and h < 12:
+                        h += 12
+                    if 0 <= h <= 23:
+                        extracted_time = f"{h:02d}:00"
+            elif re.match(r"^\s*(\d{1,2})\s*$", low):
+                h = int(low.strip())
+                if 0 <= h <= 23:
+                    extracted_time = f"{h:02d}:00"
 
             if extracted_time:
                 draft["start_time"] = extracted_time
-                if not draft.get("start_date"):
-                    now = datetime.datetime.now()
-                    draft["start_date"] = str(now.date() + datetime.timedelta(days=1))
                 if not draft.get("title"):
                     draft["title"] = "Встреча"
                 return AIResponse(
@@ -123,9 +175,16 @@ class LLMOrchestrator:
                     parsed = json.loads(match.group(0))
                     action_val = parsed.get("action")
                     if action_val in [a.value for a in AIAction]:
+                        params = parsed.get("params", {})
+                        if action_val == AIAction.GET_SCHEDULE.value:
+                            now_date_str = str(datetime.datetime.now().date())
+                            if not params.get("start_date"):
+                                params["start_date"] = now_date_str
+                            if not params.get("end_date"):
+                                params["end_date"] = params["start_date"]
                         return AIResponse(
                             action=AIAction(action_val),
-                            params=parsed.get("params", {})
+                            params=params
                         )
         return None
 
@@ -162,7 +221,12 @@ class LLMOrchestrator:
             )
 
         # Schedule
-        if any(w in low for w in ["что у меня", "какие планы", "покажи встречи", "есть ли у меня", "какие задачи", "что запланировано"]):
+        schedule_triggers = [
+            "что у меня", "какие планы", "покажи встречи", "есть ли у меня",
+            "какие задачи", "что запланировано", "мои встречи", "мои задачи",
+            "расписание", "список встреч", "список задач", "планы на", "покажи расписание"
+        ]
+        if any(w in low for w in schedule_triggers) or low in ["встречи", "задачи", "расписание", "планы"]:
             start_date = now.date()
             end_date = now.date()
             filter_type = "all"
@@ -170,7 +234,10 @@ class LLMOrchestrator:
             if "завтра" in low:
                 start_date = now.date() + datetime.timedelta(days=1)
                 end_date = start_date
-            elif "неделю" in low:
+            elif "послезавтра" in low:
+                start_date = now.date() + datetime.timedelta(days=2)
+                end_date = start_date
+            elif "неделю" in low or "неделе" in low:
                 end_date = now.date() + datetime.timedelta(days=(6 - now.weekday() + 7) % 7)
 
             if "встреч" in low:

@@ -37,10 +37,50 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(step2.action, AIAction.CREATE_MEETING)
         self.assertEqual(step2.params.get("start_time"), "15:00")
 
+    async def test_clarification_with_today_and_custom_time(self):
+        import datetime
+        today_str = str(datetime.datetime.now().date())
+        context = {
+            "awaiting_slot": "time",
+            "draft_data": {"title": "Встреча с Кириллом"}
+        }
+        res = await self.orchestrator.parse_intent("На сегодня 2:30", context=context)
+        self.assertEqual(res.action, AIAction.CREATE_MEETING)
+        self.assertEqual(res.params.get("start_date"), today_str)
+        self.assertEqual(res.params.get("start_time"), "02:30")
+
+    async def test_clarification_with_tomorrow_relative_date(self):
+        import datetime
+        tomorrow_str = str(datetime.datetime.now().date() + datetime.timedelta(days=1))
+        context = {
+            "awaiting_slot": "time",
+            "draft_data": {"title": "Встреча с Кириллом"}
+        }
+        res = await self.orchestrator.parse_intent("На завтра в 14:00", context=context)
+        self.assertEqual(res.action, AIAction.CREATE_MEETING)
+        self.assertEqual(res.params.get("start_date"), tomorrow_str)
+        self.assertEqual(res.params.get("start_time"), "14:00")
+
+    async def test_clarification_defaults_to_today_when_no_date_provided(self):
+        import datetime
+        today_str = str(datetime.datetime.now().date())
+        context = {
+            "awaiting_slot": "time",
+            "draft_data": {"title": "Встреча с Кириллом"}
+        }
+        res = await self.orchestrator.parse_intent("15:00", context=context)
+        self.assertEqual(res.action, AIAction.CREATE_MEETING)
+        self.assertEqual(res.params.get("start_date"), today_str)
+        self.assertEqual(res.params.get("start_time"), "15:00")
+
     async def test_get_schedule(self):
         res_today = await self.orchestrator.parse_intent("Что у меня сегодня?")
         self.assertEqual(res_today.action, AIAction.GET_SCHEDULE)
         self.assertEqual(res_today.params.get("filter_type"), "all")
+
+        res_meetings = await self.orchestrator.parse_intent("мои встречи")
+        self.assertEqual(res_meetings.action, AIAction.GET_SCHEDULE)
+        self.assertEqual(res_meetings.params.get("filter_type"), "meetings")
 
         res_week = await self.orchestrator.parse_intent("Что запланировано на эту неделю?")
         self.assertEqual(res_week.action, AIAction.GET_SCHEDULE)

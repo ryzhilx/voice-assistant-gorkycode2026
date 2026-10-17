@@ -106,5 +106,24 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         self.assertIn("отменено", reply.text)
         self.assertFalse(self.orch.has_pending(CHAT))
 
+    async def test_schedule_without_date_defaults_to_today(self):
+        self.llm.parse_intent.return_value = AIResponse(
+            action=AIAction.GET_SCHEDULE,
+            params={"filter_type": "all"}
+        )
+        reply = await self.orch.handle_text(CHAT, "Расписание")
+        self.assertNotIn("None", reply.text)
+        self.assertIn("сегодня", reply.text)
+
+    async def test_schedule_meetings_filter_empty_message(self):
+        self.llm.parse_intent.return_value = AIResponse(
+            action=AIAction.GET_SCHEDULE,
+            params={"filter_type": "meetings"}
+        )
+        reply = await self.orch.handle_text(CHAT, "Мои встречи")
+        self.assertNotIn("None", reply.text)
+        self.assertIn("нет запланированных встреч", reply.text)
+
 if __name__ == "__main__":
     unittest.main()
+

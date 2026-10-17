@@ -22,9 +22,9 @@ SYSTEM_PROMPT_TEMPLATE = """Ты — интеллектуальное ядро �
    - duration_minutes: длительность в минутах (по умолчанию 60)
    - participants: участники встречи, если упоминались (или null)
 
-3. "get_schedule" — Запрос расписания на день, период или неделю.
+3. "get_schedule" — Запрос расписания на день, период или неделю (например, "мои встречи", "расписание", "что у меня сегодня?").
    Параметры:
-   - start_date: дата начала периода YYYY-MM-DD
+   - start_date: дата начала периода YYYY-MM-DD (если не указана — используй дату из {current_datetime})
    - end_date: дата конца периода YYYY-MM-DD (для одного дня равна start_date)
    - filter_type: "all" (по умолчанию), "tasks" или "meetings"
 
@@ -143,6 +143,28 @@ FEW_SHOT_EXAMPLES = [
                 "start_date": "2026-10-17",
                 "end_date": "2026-10-17",
                 "filter_type": "meetings"
+            }
+        }
+    },
+    {
+        "input": "Мои встречи",
+        "output": {
+            "action": "get_schedule",
+            "params": {
+                "start_date": "2026-10-18",
+                "end_date": "2026-10-18",
+                "filter_type": "meetings"
+            }
+        }
+    },
+    {
+        "input": "Расписание",
+        "output": {
+            "action": "get_schedule",
+            "params": {
+                "start_date": "2026-10-18",
+                "end_date": "2026-10-18",
+                "filter_type": "all"
             }
         }
     },

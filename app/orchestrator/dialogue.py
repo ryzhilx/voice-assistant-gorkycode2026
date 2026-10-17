@@ -1,3 +1,4 @@
+import datetime
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, List
@@ -102,7 +103,8 @@ class DialogueOrchestrator:
             return Reply(response_text)
 
         if result.action == AIAction.GET_SCHEDULE:
-            start_date = result.params.get("start_date")
+            now_str = str(datetime.datetime.now().date())
+            start_date = result.params.get("start_date") or now_str
             end_date = result.params.get("end_date") or start_date
             filter_type = result.params.get("filter_type", "all")
 
@@ -111,11 +113,28 @@ class DialogueOrchestrator:
             meetings = data.get("meetings", [])
 
             if not tasks and not meetings:
-                period = start_date if start_date == end_date else f"с {start_date} по {end_date}"
-                return Reply(f"На {period} ничего не запланировано.")
+                if start_date == now_str and end_date == now_str:
+                    period_text = f"сегодня ({start_date})"
+                elif start_date == end_date:
+                    period_text = start_date
+                else:
+                    period_text = f"период с {start_date} по {end_date}"
+
+                target = "ничего не запланировано"
+                if filter_type == "meetings":
+                    target = "нет запланированных встреч"
+                elif filter_type == "tasks":
+                    target = "нет активных задач"
+
+                return Reply(f"На {period_text} {target}.")
 
             lines: List[str] = []
-            period_str = start_date if start_date == end_date else f"{start_date} — {end_date}"
+            if start_date == now_str and end_date == now_str:
+                period_str = f"сегодня, {start_date}"
+            elif start_date == end_date:
+                period_str = start_date
+            else:
+                period_str = f"{start_date} — {end_date}"
             lines.append(f"Расписание ({period_str}):")
 
             if meetings:

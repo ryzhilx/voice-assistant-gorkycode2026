@@ -3,10 +3,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 from app.ai.schemas import AIAction, AIResponse
 from app.orchestrator.dialogue import DEFAULT_QUESTION, DialogueOrchestrator
+from app.storage.db import Database
 
 CHAT = 1
 DRAFT = {"title": "Встреча с Иваном", "start_date": "2026-10-18"}
-
 
 def clarification(question="На какое время поставить встречу?"):
     params = {"missing_slot": "time", "draft_data": dict(DRAFT)}
@@ -14,11 +14,11 @@ def clarification(question="На какое время поставить вст
         params["question"] = question
     return AIResponse(action=AIAction.ASK_CLARIFICATION, params=params)
 
-
 class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.llm = MagicMock(parse_intent=AsyncMock())
-        self.orch = DialogueOrchestrator(llm=self.llm)
+        self.db = Database(":memory:")
+        self.orch = DialogueOrchestrator(llm=self.llm, db=self.db)
 
     async def test_clarification_saves_draft_and_returns_question(self):
         self.llm.parse_intent.return_value = clarification()
@@ -40,7 +40,8 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
 
         self.llm.parse_intent.assert_awaited_with("В 15:00", {"awaiting_slot": "time", "draft_data": DRAFT})
         self.assertFalse(self.orch.has_pending(CHAT))
-        self.assertIn("create_meeting", reply.text)
+        self.assertIn("Встреча", reply.text)
+        self.assertIn("15:00", reply.text)
 
     async def test_repeated_clarification_keeps_pending(self):
         self.llm.parse_intent.return_value = clarification()
@@ -82,7 +83,6 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
 
         self.llm.parse_intent.assert_awaited_with("Напомни купить хлеб", None)
         self.assertTrue(self.orch.has_pending(1))
-
 
 if __name__ == "__main__":
     unittest.main()

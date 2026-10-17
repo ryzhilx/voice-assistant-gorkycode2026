@@ -182,6 +182,20 @@ class LLMOrchestrator:
                                 params["start_date"] = now_date_str
                             if not params.get("end_date"):
                                 params["end_date"] = params["start_date"]
+
+                        if action_val in [AIAction.CREATE_MEETING.value, AIAction.CREATE_TASK.value]:
+                            time_key = "start_time" if action_val == AIAction.CREATE_MEETING.value else "due_time"
+                            val_time = params.get(time_key)
+                            if val_time and isinstance(val_time, str):
+                                low_text = text.lower()
+                                time_match = re.search(r"\b([01]?\d|2[0-3])[:.-](\d{2})\b", low_text)
+                                if time_match:
+                                    explicit_h = int(time_match.group(1))
+                                    explicit_m = int(time_match.group(2))
+                                    has_pm_word = any(w in low_text for w in ["дня", "вечера", "pm"])
+                                    if not has_pm_word:
+                                        params[time_key] = f"{explicit_h:02d}:{explicit_m:02d}"
+
                         return AIResponse(
                             action=AIAction(action_val),
                             params=params

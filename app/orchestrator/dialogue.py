@@ -78,6 +78,8 @@ class DialogueOrchestrator:
             date_info = f" на {due_date}" if due_date else ""
             time_info = f" в {due_time}" if due_time else ""
             prefix = "Напоминание установлено" if is_reminder else "Задача добавлена"
+            if title.strip().lower() in ["задача", "напоминание", "task"]:
+                return Reply(f"{prefix}{date_info}{time_info}.")
             return Reply(f"{prefix}: «{title}»{date_info}{time_info}.")
 
         if result.action == AIAction.CREATE_MEETING:
@@ -97,7 +99,10 @@ class DialogueOrchestrator:
                 participants=participants
             )
 
-            response_text = f"Встреча «{title}» назначена на {start_date} в {start_time}."
+            if title.strip().lower() in ["встреча", "созвон", "meeting"]:
+                response_text = f"Встреча назначена на {start_date} в {start_time}."
+            else:
+                response_text = f"Встреча «{title}» назначена на {start_date} в {start_time}."
             if conflict:
                 response_text += f"\nВнимание: в это же время уже стоит «{conflict.get('title')}»."
             return Reply(response_text)

@@ -22,6 +22,11 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Встреча", res.params.get("title", ""))
         self.assertEqual(res.params.get("start_time"), "15:00")
 
+    async def test_meeting_with_exact_time_does_not_convert_to_pm(self):
+        res = await self.orchestrator.parse_intent("встреча сегодня в 2:39")
+        self.assertEqual(res.action, AIAction.CREATE_MEETING)
+        self.assertEqual(res.params.get("start_time"), "02:39")
+
     async def test_meeting_clarification_dialog(self):
         # Step 1: no time specified -> triggers clarification
         step1 = await self.orchestrator.parse_intent("Поставь встречу с Иваном завтра")

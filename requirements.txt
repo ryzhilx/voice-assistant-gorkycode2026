@@ -1,5 +1,5 @@
 # Telegram Bot Framework
-aiogram>=3.4.0
+aiogram>=3.31.0
 
 # HTTP & Async Network
 httpx>=0.27.0

@@ -23,4 +23,5 @@ Thumbs.db
 *.mp3
 
 *.md
+!README.md
 *.pdf

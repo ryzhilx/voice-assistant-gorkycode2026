@@ -7,6 +7,11 @@ class Database:
         self.db_path = db_path
         self._is_memory = (db_path == ":memory:")
         self._shared_conn: Optional[sqlite3.Connection] = None
+        if not self._is_memory and self.db_path:
+            import os
+            dirname = os.path.dirname(self.db_path)
+            if dirname and not os.path.exists(dirname):
+                os.makedirs(dirname, exist_ok=True)
         if self._is_memory:
             self._shared_conn = sqlite3.connect(":memory:", check_same_thread=False)
             self._shared_conn.row_factory = sqlite3.Row

@@ -1,5 +1,7 @@
 # Голосовой ассистент для задач и встреч
 
+[![Build Status](https://github.com/ryzhilx/voice-assistant-gorkycode2026/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ryzhilx/voice-assistant-gorkycode2026/actions/workflows/ci.yml)
+
 Telegram-бот с поддержкой голосового и текстового управления личными задачами, встречами и напоминаниями на естественном языке.
 
 ## Быстрый запуск

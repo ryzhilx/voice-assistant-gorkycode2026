@@ -31,6 +31,7 @@ class Database:
                         due_date TEXT,
                         due_time TEXT,
                         is_reminder BOOLEAN DEFAULT 0,
+                        reminder_sent BOOLEAN DEFAULT 0,
                         status TEXT DEFAULT 'pending',
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
@@ -44,11 +45,22 @@ class Database:
                         start_time TEXT NOT NULL,
                         duration_minutes INTEGER DEFAULT 60,
                         participants TEXT,
+                        reminder_sent BOOLEAN DEFAULT 0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
+                try:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN reminder_sent BOOLEAN DEFAULT 0")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE meetings ADD COLUMN reminder_sent BOOLEAN DEFAULT 0")
+                except sqlite3.OperationalError:
+                    pass
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_user_date ON tasks(user_id, due_date)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_meetings_user_date ON meetings(user_id, start_date)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_reminder ON tasks(reminder_sent, due_date, due_time)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_meetings_reminder ON meetings(reminder_sent, start_date, start_time)")
         finally:
             if not self._is_memory:
                 conn.close()
@@ -203,6 +215,87 @@ class Database:
                     cur = conn.execute(
                         "UPDATE tasks SET status = 'completed' WHERE id = ? AND user_id = ?",
                         (task_id, user_id)
+                    )
+                    return cur.rowcount > 0
+            finally:
+                if not self._is_memory:
+                    conn.close()
+        return await asyncio.to_thread(_update)
+
+    async def get_due_tasks(self, current_date: str, current_time: str) -> List[Dict[str, Any]]:
+        def _query():
+            conn = self._get_connection()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT id, user_id, title, due_date, due_time, is_reminder
+                    FROM tasks
+                    WHERE status != 'completed'
+                      AND reminder_sent = 0
+                      AND due_date IS NOT NULL
+                      AND due_time IS NOT NULL
+                      AND (
+                          (due_date = ? AND due_time <= ?)
+                          OR (due_date < ?)
+                      )
+                    ORDER BY due_date ASC, due_time ASC
+                    """,
+                    (current_date, current_time, current_date)
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                if not self._is_memory:
+                    conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def mark_task_reminder_sent(self, task_id: int) -> bool:
+        def _update():
+            conn = self._get_connection()
+            try:
+                with conn:
+                    cur = conn.execute(
+                        "UPDATE tasks SET reminder_sent = 1 WHERE id = ?",
+                        (task_id,)
+                    )
+                    return cur.rowcount > 0
+            finally:
+                if not self._is_memory:
+                    conn.close()
+        return await asyncio.to_thread(_update)
+
+    async def get_due_meetings(self, current_date: str, current_time: str) -> List[Dict[str, Any]]:
+        def _query():
+            conn = self._get_connection()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT id, user_id, title, start_date, start_time, duration_minutes, participants
+                    FROM meetings
+                    WHERE reminder_sent = 0
+                      AND start_date IS NOT NULL
+                      AND start_time IS NOT NULL
+                      AND (
+                          (start_date = ? AND start_time <= ?)
+                          OR (start_date < ?)
+                      )
+                    ORDER BY start_date ASC, start_time ASC
+                    """,
+                    (current_date, current_time, current_date)
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                if not self._is_memory:
+                    conn.close()
+        return await asyncio.to_thread(_query)
+
+    async def mark_meeting_reminder_sent(self, meeting_id: int) -> bool:
+        def _update():
+            conn = self._get_connection()
+            try:
+                with conn:
+                    cur = conn.execute(
+                        "UPDATE meetings SET reminder_sent = 1 WHERE id = ?",
+                        (meeting_id,)
                     )
                     return cur.rowcount > 0
             finally:

@@ -153,6 +153,35 @@ class TestSemanticSearch(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(len(results) > 0)
         self.assertEqual(results[0]["id"], 1)
 
+    async def test_tz_query_matching(self):
+        records = [
+            {"id": 1, "title": "Согласовать контракт с поставщиком", "type": "task"},
+            {"id": 2, "title": "Купить продукты домой", "type": "task"},
+            {"id": 3, "title": "Подготовить презентацию для демо", "type": "task"}
+        ]
+        orch = LLMOrchestrator()
+        orch.yandex_api_key = None
+        orch.yandex_folder_id = None
+        res = await orch.parse_intent("Я когда-то ставил задачу по договору, найди ее")
+        self.assertEqual(res.action, AIAction.SEARCH_RECORDS)
+        self.assertEqual(res.params.get("record_type"), "tasks")
+        ranked = self.engine.rank_records(res.params.get("query"), records, top_k=1)
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(ranked[0]["id"], 1)
+
+    async def test_inflected_forms_search(self):
+        records = [
+            {"id": 1, "title": "Сделать презентацию со слайдами", "type": "task"},
+            {"id": 2, "title": "Записаться к врачу", "type": "task"}
+        ]
+        ranked = self.engine.rank_records("слайды", records, top_k=1)
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(ranked[0]["id"], 1)
+
+        ranked2 = self.engine.rank_records("со слайдами", records, top_k=1)
+        self.assertEqual(len(ranked2), 1)
+        self.assertEqual(ranked2[0]["id"], 1)
+
 
 @unittest.skipUnless(settings.yandex_api_key and settings.yandex_folder_id, "Yandex credentials not configured")
 class TestYandexCloudLive(unittest.IsolatedAsyncioTestCase):

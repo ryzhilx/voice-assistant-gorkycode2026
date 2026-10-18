@@ -1,5 +1,6 @@
 import math
 import logging
+import re
 import httpx
 from typing import List, Optional, Dict, Any
 from app.config import settings
@@ -10,6 +11,13 @@ class SemanticSearchEngine:
     def __init__(self):
         self.yandex_api_key = settings.yandex_api_key
         self.yandex_folder_id = settings.yandex_folder_id
+
+    @staticmethod
+    def stem_word(w: str) -> str:
+        w = w.lower()
+        if len(w) <= 3:
+            return w
+        return re.sub(r'(?:ами|ями|иями|ов|ев|ей|ам|ям|иям|ом|ем|ой|ей|ею|ах|ях|иях|ую|юю|ая|яя|ое|ее|ые|ие|ый|ий|ой|ого|его|ому|ему|ым|им|ыми|ими|а|я|у|ю|о|е|ы|и|ь|й)$', '', w)
 
     async def get_embedding(self, text: str) -> List[float]:
         if self.yandex_api_key and self.yandex_folder_id:
@@ -38,23 +46,34 @@ class SemanticSearchEngine:
                 return resp.json().get("embedding")
         return None
 
-    def _local_vectorize(self, text: str, dim: int = 128) -> List[float]:
+    def _local_vectorize(self, text: str, dim: int = 256) -> List[float]:
+        vec = [0.0] * dim
+        if not text:
+            return vec
+
         synonyms = {
             "договор": ["контракт", "соглашение", "сделка", "подписание"],
             "презентация": ["слайды", "питч", "демо", "выступление"],
             "отчет": ["справка", "аналитика", "документ", "статистика"],
-            "встреча": ["созвон", "митинг", "синк", "обсуждение"]
+            "встреча": ["созвон", "митинг", "синк", "обсуждение"],
+            "бюджет": ["финансы", "деньги", "расходы", "смета"]
         }
+        stopwords = {
+            "и", "в", "во", "не", "на", "с", "со", "по", "к", "ко", "о", "об", "обо",
+            "у", "из", "за", "от", "до", "для", "про", "а", "но", "мне", "я", "ее", "его", "их"
+        }
+        stemmed_syns = {self.stem_word(k): [self.stem_word(s) for s in v] for k, v in synonyms.items()}
 
-        vec = [0.0] * dim
-        tokens = text.lower().replace(",", " ").replace(".", " ").split()
+        raw_tokens = [t for t in re.sub(r"[^a-zA-Zа-яА-Я0-9]", " ", str(text).lower()).split() if t not in stopwords and len(t) > 1]
+        expanded_tokens = list(raw_tokens)
 
-        expanded_tokens = list(tokens)
-        for t in tokens:
-            for root, syns in synonyms.items():
-                if root in t or any(s in t for s in syns):
-                    expanded_tokens.extend(syns)
-                    expanded_tokens.append(root)
+        for t in raw_tokens:
+            st = self.stem_word(t)
+            expanded_tokens.append(st)
+            for s_root, s_list in stemmed_syns.items():
+                if st == s_root or st in s_list or s_root in st or any(sl in st for sl in s_list):
+                    expanded_tokens.extend(s_list)
+                    expanded_tokens.append(s_root)
 
         for token in expanded_tokens:
             h = abs(hash(token)) % dim
@@ -82,7 +101,10 @@ class SemanticSearchEngine:
         return dot / (norm_a * norm_b)
 
     def rank_records(self, query: str, records: List[Dict[str, Any]], top_k: int = 3) -> List[Dict[str, Any]]:
-        query_vec = self._local_vectorize(query)
+        if not query or not records:
+            return []
+
+        query_vec = self._local_vectorize(str(query))
         scored = []
 
         for rec in records:
@@ -93,4 +115,5 @@ class SemanticSearchEngine:
             scored.append((score, rec))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [item[1] for item in scored[:top_k] if item[0] > 0.15]
+        return [item[1] for item in scored[:top_k] if item[0] > 0.20]
+

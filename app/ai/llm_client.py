@@ -287,7 +287,15 @@ class LLMOrchestrator:
         parts = re.split(pattern, raw, flags=re.IGNORECASE)
         clean_parts = [p.strip() for p in parts if p.strip()]
         if len(clean_parts) > 1:
-            return clean_parts
+            merged = []
+            tail_re = re.compile(r"^(?:найди|поищи)(?:\s+(?:ее|его|их|это|мне|пожалуйста|плиз))*\s*[.?!]*$", re.IGNORECASE)
+            for p in clean_parts:
+                if merged and tail_re.match(p):
+                    merged[-1] = f"{merged[-1]}, {p}"
+                else:
+                    merged.append(p)
+            if len(merged) > 1:
+                return merged
 
         return [raw]
 
@@ -387,14 +395,14 @@ class LLMOrchestrator:
                 }
             )
 
-        if any(w in low for w in ["найди", "поищи", "когда у меня была", "когда была", "я когда-то ставил"]):
+        if any(w in low for w in ["найди", "поищи", "когда у меня была", "когда была", "я когда-то", "была ли у меня", "поиск"]):
             record_type = "all"
             if "встреч" in low:
                 record_type = "meetings"
             elif "задач" in low:
                 record_type = "tasks"
 
-            clean = re.sub(r"\b(найди|поищи|задачу|задачи|встречу|встречи|встреча|про|по|с|когда-то|когда|у|меня|была|были|было|я|ставил|ставила|ее|его|их|мне|то)\b|[-?.,!]", " ", low)
+            clean = re.sub(r"\b(найди|поищи|поиск|задачу|задачи|задача|встречу|встречи|встреча|про|по|с|со|о|об|обо|для|на|к|ко|когда-то|когда|у|меня|была|были|было|ли|я|ставил|ставила|создавал|создавала|делал|делала|ее|его|их|мне|то)\b|[-?.,!]", " ", low)
             query = " ".join(clean.split()).strip()
             return AIResponse(
                 action=AIAction.SEARCH_RECORDS,

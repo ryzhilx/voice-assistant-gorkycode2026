@@ -66,5 +66,36 @@ class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
         msg.answer.assert_awaited_once()
 
 
+    async def test_help_handler_sends_instructions(self):
+        msg = make_message()
+        await handlers.cmd_help(msg)
+        msg.answer.assert_awaited_once()
+        self.assertIn("Встречи", msg.answer.await_args.args[0])
+
+    async def test_today_command_fetches_schedule(self):
+        msg = make_message()
+        await handlers.cmd_today(msg)
+        self.orch.handle_text.assert_awaited_once_with(7, "Что у меня запланировано на сегодня?")
+        msg.answer.assert_awaited_once()
+
+    async def test_tasks_command_fetches_tasks(self):
+        msg = make_message()
+        await handlers.cmd_tasks(msg)
+        self.orch.handle_text.assert_awaited_once_with(7, "Какие у меня активные задачи?")
+        msg.answer.assert_awaited_once()
+
+    async def test_dialogue_cancel_callback_resets_dialogue(self):
+        cb = MagicMock()
+        cb.from_user.id = 7
+        cb.answer = AsyncMock()
+        cb.message = MagicMock(edit_text=AsyncMock())
+
+        await handlers.on_dialogue_cancel(cb)
+
+        self.orch.reset.assert_called_once_with(7)
+        cb.answer.assert_awaited_once_with("Диалог отменен")
+        cb.message.edit_text.assert_awaited_once_with("Действие отменено. Чем могу помочь?")
+
+
 if __name__ == "__main__":
     unittest.main()

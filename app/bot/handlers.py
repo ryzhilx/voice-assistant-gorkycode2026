@@ -4,8 +4,14 @@ import logging
 from typing import Optional
 
 from aiogram import Bot, Router, F
-from aiogram.filters import CommandStart
-from aiogram.types import Message, BufferedInputFile, CallbackQuery
+from aiogram.filters import CommandStart, Command
+from aiogram.types import (
+    Message,
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 
 from app.orchestrator.dialogue import DialogueOrchestrator
 from app.speech.speechkit import YandexSpeechKitService
@@ -16,6 +22,43 @@ router = Router()
 orchestrator = DialogueOrchestrator()
 stt = YandexSpeechKitService()
 
+
+def get_main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📅 На сегодня", callback_data="nav:today"),
+                InlineKeyboardButton(text="📋 Мои задачи", callback_data="nav:tasks"),
+            ],
+            [
+                InlineKeyboardButton(text="💡 Справка и примеры", callback_data="nav:help"),
+            ]
+        ]
+    )
+
+
+def get_schedule_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📅 На завтра", callback_data="nav:tomorrow"),
+                InlineKeyboardButton(text="🔄 Обновить", callback_data="nav:today"),
+            ],
+            [
+                InlineKeyboardButton(text="📋 Активные задачи", callback_data="nav:tasks"),
+            ]
+        ]
+    )
+
+
+def get_cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отменить ввод", callback_data="dialogue:cancel")]
+        ]
+    )
+
+
 async def _send_action_safe(bot: Optional[Bot], chat_id: int, action: str) -> None:
     if bot and hasattr(bot, "send_chat_action"):
         try:
@@ -25,15 +68,96 @@ async def _send_action_safe(bot: Optional[Bot], chat_id: int, action: str) -> No
         except Exception:
             pass
 
+
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     orchestrator.reset(message.chat.id)
-    await message.answer("Привет! Отправь голосовое или текстовое сообщение, например: «Поставь встречу с Иваном завтра».")
+    text = (
+        "👋 Привет! Я голосовой ассистент для задач и встреч.\n\n"
+        "Отправьте мне голосовое или текстовое сообщение:\n"
+        "• «Поставь встречу с Михаилом завтра в 14:00»\n"
+        "• «Напомни позвонить врачу сегодня в 18:30»\n"
+        "• «Что у меня запланировано на сегодня?»\n"
+        "• «Найди задачу про отчет»\n\n"
+        "Или воспользуйтесь кнопками ниже 👇"
+    )
+    await message.answer(text, reply_markup=get_main_menu_keyboard())
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    help_text = (
+        "📖 *Как пользоваться ассистентом:*\n\n"
+        "1️⃣ *Встречи:*\n"
+        "• «Встреча с командой в пятницу в 15:00»\n"
+        "• «Созвон с клиентом послезавтра в 11:00»\n"
+        "_(Если не указать время или дату, я спрошу их дополнительно)_\n\n"
+        "2️⃣ *Задачи и напоминания:*\n"
+        "• «Напомни купить кофе завтра в 9 утра»\n"
+        "• «Задача: подготовить презентацию до конца недели»\n\n"
+        "3️⃣ *Расписание:*\n"
+        "• «Что у меня сегодня?»\n"
+        "• «Планы на завтра» или «Расписание на неделю»\n\n"
+        "4️⃣ *Умный поиск:*\n"
+        "• «Найди задачу про договор»\n"
+        "• «Когда созвон с дизайнером?»\n\n"
+        "⚙️ *Команды меню:*\n"
+        "/today — расписание на сегодня\n"
+        "/tasks — список задач\n"
+        "/cancel — отменить текущий ввод"
+    )
+    await message.answer(help_text, parse_mode="Markdown")
+
+
+@router.message(Command("today", "schedule"))
+async def cmd_today(message: Message, bot: Optional[Bot] = None):
+    await _send_action_safe(bot, message.chat.id, "typing")
+    reply = await orchestrator.handle_text(message.chat.id, "Что у меня запланировано на сегодня?")
+    await message.answer(reply.text, reply_markup=get_schedule_keyboard())
+
+
+@router.message(Command("tasks"))
+async def cmd_tasks(message: Message, bot: Optional[Bot] = None):
+    await _send_action_safe(bot, message.chat.id, "typing")
+    reply = await orchestrator.handle_text(message.chat.id, "Какие у меня активные задачи?")
+    await message.answer(reply.text, reply_markup=get_schedule_keyboard())
+
 
 @router.message(F.text.lower().in_(["/cancel", "отмена", "сброс"]))
 async def cmd_cancel(message: Message):
     orchestrator.reset(message.chat.id)
     await message.answer("Контекст диалога сброшен. Чем могу помочь?")
+
+
+@router.callback_query(F.data == "dialogue:cancel")
+async def on_dialogue_cancel(callback: CallbackQuery):
+    orchestrator.reset(callback.from_user.id)
+    await callback.answer("Диалог отменен")
+    if callback.message:
+        await callback.message.edit_text("Действие отменено. Чем могу помочь?")
+
+
+@router.callback_query(F.data.startswith("nav:"))
+async def on_navigation(callback: CallbackQuery):
+    action = callback.data.split(":")[1]
+    chat_id = callback.from_user.id
+
+    if action == "today":
+        reply = await orchestrator.handle_text(chat_id, "Что у меня запланировано на сегодня?")
+        await callback.answer()
+        await callback.message.answer(reply.text, reply_markup=get_schedule_keyboard())
+    elif action == "tomorrow":
+        reply = await orchestrator.handle_text(chat_id, "Что у меня запланировано на завтра?")
+        await callback.answer()
+        await callback.message.answer(reply.text, reply_markup=get_schedule_keyboard())
+    elif action == "tasks":
+        reply = await orchestrator.handle_text(chat_id, "Какие у меня задачи?")
+        await callback.answer()
+        await callback.message.answer(reply.text, reply_markup=get_schedule_keyboard())
+    elif action == "help":
+        await callback.answer()
+        await cmd_help(callback.message)
+
 
 @router.callback_query(F.data.startswith("task_done:"))
 async def on_task_done(callback: CallbackQuery):
@@ -53,6 +177,7 @@ async def on_task_done(callback: CallbackQuery):
         logger.warning("Failed to complete task via callback: %s", e)
         await callback.answer("Ошибка при обновлении задачи.")
 
+
 @router.message(F.voice)
 async def on_voice(message: Message, bot: Optional[Bot] = None):
     await _send_action_safe(bot, message.chat.id, "record_voice")
@@ -68,7 +193,12 @@ async def on_voice(message: Message, bot: Optional[Bot] = None):
     await _send_action_safe(bot, message.chat.id, "typing")
     try:
         reply = await orchestrator.handle_text(message.chat.id, text)
-        await message.answer(reply.text)
+
+        is_pending = orchestrator.has_pending(message.chat.id) if hasattr(orchestrator, "has_pending") else False
+        if is_pending is True:
+            await message.answer(reply.text, reply_markup=get_cancel_keyboard())
+        else:
+            await message.answer(reply.text)
 
         try:
             audio = await stt.text_to_speech(reply.text)
@@ -80,12 +210,24 @@ async def on_voice(message: Message, bot: Optional[Bot] = None):
         logger.exception("Error processing voice message: %s", e)
         await message.answer("Произошла ошибка при обработке запроса. Попробуйте еще раз.")
 
+
+@router.message(F.video_note)
+async def on_video_note(message: Message):
+    await message.answer("Я лучше всего воспринимаю обычные голосовые заметки (аудио) или текст. Пожалуйста, запишите голосовое сообщение!")
+
+
 @router.message(F.text & ~F.text.startswith("/"))
 async def on_text(message: Message, bot: Optional[Bot] = None):
     await _send_action_safe(bot, message.chat.id, "typing")
     try:
         reply = await orchestrator.handle_text(message.chat.id, message.text)
-        await message.answer(reply.text)
+
+        is_pending = orchestrator.has_pending(message.chat.id) if hasattr(orchestrator, "has_pending") else False
+        if is_pending is True:
+            await message.answer(reply.text, reply_markup=get_cancel_keyboard())
+        else:
+            await message.answer(reply.text)
     except Exception as e:
         logger.exception("Error processing text message: %s", e)
         await message.answer("Произошла ошибка при обработке запроса. Попробуйте еще раз.")
+

@@ -96,6 +96,75 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
         records = await self.db.get_all_records_for_search(user_id=10, record_type="meetings")
         self.assertEqual(records[0]["status"], "active")
 
+    async def test_recurring_task_schedule_expansion(self):
+        await self.db.add_task(
+            user_id=20,
+            title="Пить витамины",
+            due_date="2026-10-18",
+            due_time="09:00",
+            recurrence="daily"
+        )
+        res = await self.db.get_schedule(user_id=20, start_date="2026-10-18", end_date="2026-10-20")
+        tasks = res["tasks"]
+        self.assertEqual(len(tasks), 3)
+        self.assertEqual([t["due_date"] for t in tasks], ["2026-10-18", "2026-10-19", "2026-10-20"])
+        self.assertEqual(tasks[0]["recurrence"], "daily")
+
+    async def test_recurring_meeting_weekdays_expansion(self):
+        await self.db.add_meeting(
+            user_id=21,
+            title="Стендап",
+            start_date="2026-10-16",
+            start_time="11:00",
+            recurrence="weekdays"
+        )
+        res = await self.db.get_schedule(user_id=21, start_date="2026-10-16", end_date="2026-10-19")
+        meetings = res["meetings"]
+        self.assertEqual(len(meetings), 2)
+        self.assertEqual([m["start_date"] for m in meetings], ["2026-10-16", "2026-10-19"])
+
+    async def test_recurring_meeting_conflict(self):
+        await self.db.add_meeting(
+            user_id=22,
+            title="Планерка",
+            start_date="2026-10-19",
+            start_time="10:00",
+            recurrence="weekly:mon"
+        )
+        conflict = await self.db.check_meeting_conflict(user_id=22, start_date="2026-10-26", start_time="10:00")
+        self.assertIsNotNone(conflict)
+        self.assertEqual(conflict["title"], "Планерка")
+
+        no_conflict = await self.db.check_meeting_conflict(user_id=22, start_date="2026-10-27", start_time="10:00")
+        self.assertIsNone(no_conflict)
+
+    async def test_recurring_task_completion_advances_date(self):
+        task_id = await self.db.add_task(
+            user_id=23,
+            title="Ежедневный отчет",
+            due_date="2026-10-18",
+            recurrence="daily"
+        )
+        ok = await self.db.mark_task_completed(user_id=23, task_id=task_id)
+        self.assertTrue(ok)
+
+        schedule = await self.db.get_schedule(user_id=23, start_date="2026-10-19", end_date="2026-10-19")
+        self.assertEqual(len(schedule["tasks"]), 1)
+        self.assertEqual(schedule["tasks"][0]["status"], "pending")
+
+    def test_calculate_next_occurrence(self):
+        d1 = Database.calculate_next_occurrence("2026-10-18", "daily")
+        self.assertEqual(d1, "2026-10-19")
+
+        d2 = Database.calculate_next_occurrence("2026-10-16", "weekdays")
+        self.assertEqual(d2, "2026-10-19")
+
+        d3 = Database.calculate_next_occurrence("2026-10-19", "weekly:mon")
+        self.assertEqual(d3, "2026-10-26")
+
+        d4 = Database.calculate_next_occurrence("2026-10-18", "monthly")
+        self.assertEqual(d4, "2026-11-18")
+
 
 if __name__ == "__main__":
     unittest.main()

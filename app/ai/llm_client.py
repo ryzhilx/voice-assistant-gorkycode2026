@@ -128,6 +128,80 @@ class LLMOrchestrator:
                 return f"{h:02d}:00"
         return None
 
+    @staticmethod
+    def _extract_recurrence(text: str) -> Optional[str]:
+        low = text.lower()
+        if re.search(r"\bпо\s+понедельникам\b|\bкаждый\s+понедельник\b", low):
+            return "weekly:mon"
+        if re.search(r"\bпо\s+вторникам\b|\bкаждый\s+вторник\b", low):
+            return "weekly:tue"
+        if re.search(r"\bпо\s+средам\b|\bкаждую\s+среду\b", low):
+            return "weekly:wed"
+        if re.search(r"\bпо\s+четвергам\b|\bкаждый\s+четверг\b", low):
+            return "weekly:thu"
+        if re.search(r"\bпо\s+пятницам\b|\bкаждую\s+пятницу\b", low):
+            return "weekly:fri"
+        if re.search(r"\bпо\s+субботам\b|\bкаждую\s+субботу\b", low):
+            return "weekly:sat"
+        if re.search(r"\bпо\s+воскресеньям\b|\bкаждое\s+воскресенье\b", low):
+            return "weekly:sun"
+        if re.search(r"\b(по\s+будням|в\s+будни|в\s+будние\s+дни|каждый\s+будний\s+день|по\s+будним\s+дням|с\s+понедельника\s+по\s+пятницу)\b", low):
+            return "weekdays"
+        if re.search(r"\b(каждый\s+день|ежедневно|каждое\s+утро|каждый\s+вечер|по\s+дням)\b", low):
+            return "daily"
+        if re.search(r"\b(каждую\s+неделю|еженедельно|раз\s+в\s+неделю)\b", low):
+            return "weekly"
+        if re.search(r"\b(каждый\s+месяц|ежемесячно|раз\s+в\s+месяц)\b", low):
+            return "monthly"
+        return None
+
+    def _initial_recurring_date(self, recurrence: str, target_time: Optional[str] = None) -> datetime.date:
+        try:
+            from zoneinfo import ZoneInfo
+            now_dt = datetime.datetime.now(ZoneInfo(self._current_timezone)).replace(tzinfo=None)
+        except Exception:
+            now_dt = datetime.datetime.now()
+        today = now_dt.date()
+
+        time_passed = False
+        if target_time:
+            try:
+                th, tm = map(int, target_time.split(":"))
+                now_min = now_dt.hour * 60 + now_dt.minute
+                target_min = th * 60 + tm
+                if target_min <= now_min:
+                    time_passed = True
+            except Exception:
+                pass
+
+        if recurrence == "daily":
+            return today + datetime.timedelta(days=1) if time_passed else today
+
+        if recurrence == "weekdays":
+            cand = today
+            if time_passed or cand.weekday() >= 5:
+                cand = cand + datetime.timedelta(days=1)
+            while cand.weekday() >= 5:
+                cand = cand + datetime.timedelta(days=1)
+            return cand
+
+        if recurrence.startswith("weekly:"):
+            day_code = recurrence.split(":", 1)[1]
+            day_map = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+            target_wd = day_map.get(day_code, 0)
+            days_ahead = (target_wd - today.weekday()) % 7
+            if days_ahead == 0 and time_passed:
+                days_ahead = 7
+            return today + datetime.timedelta(days=days_ahead)
+
+        if recurrence == "weekly":
+            return today + datetime.timedelta(days=7) if time_passed else today
+
+        if recurrence == "monthly":
+            return today
+
+        return today
+
     def _resolve_clarification(self, answer_text: str, context: Dict[str, Any]) -> AIResponse:
         draft = dict(context.get("draft_data", {}))
         missing_slot = context.get("awaiting_slot")
@@ -267,6 +341,11 @@ class LLMOrchestrator:
                                     if not has_pm_word:
                                         params[time_key] = f"{explicit_h:02d}:{explicit_m:02d}"
 
+                            if not params.get("recurrence"):
+                                rec = self._extract_recurrence(text)
+                                if rec:
+                                    params["recurrence"] = rec
+
                         return AIResponse(
                             action=AIAction(action_val),
                             params=params
@@ -289,7 +368,7 @@ class LLMOrchestrator:
                 return parts
 
         command_verbs = (
-            r"(?:напомни|поставь|добавь|назначь|запиши|создай|созвон|встреча|встречу|задачу|задача|"
+            r"(?:напоминай|напомни|поставь|добавь|назначь|запиши|создай|созвон|встреча|встречу|задачу|задача|планерка|планерку|стендап|"
             r"покажи|что у меня|какие планы|какие встречи|какие задачи|найди|поищи|перенеси|перенести|перенесем|сдвинь|отложи|"
             r"удали|удалить|убери|отмени|отменить|стереть|сотри|переименуй|отметь|выполни|выполнил|сделал|закрой|заверши|купи|купить|сделай|сделать)"
         )
@@ -489,15 +568,34 @@ class LLMOrchestrator:
                 params={"target": target, "new_title": new_title}
             )
 
+        recurrence = self._extract_recurrence(low)
         parsed_date = self._extract_date(low)
-        target_date = parsed_date if parsed_date else now.date()
-
         target_time = self._parse_time(low)
         if not target_time and "через два часа" in low:
             new_dt = now + datetime.timedelta(hours=2)
             target_time = new_dt.strftime("%H:%M")
 
-        if "встреч" in low or "созвон" in low:
+        if recurrence and not parsed_date:
+            target_date = self._initial_recurring_date(recurrence, target_time)
+        else:
+            target_date = parsed_date if parsed_date else now.date()
+
+        rec_strip = (
+            r"\b(по\s+понедельникам|каждый\s+понедельник|по\s+вторникам|каждый\s+вторник|"
+            r"по\s+средам|каждую\s+среду|по\s+четвергам|каждый\s+четверг|"
+            r"по\s+пятницам|каждую\s+пятницу|по\s+субботам|каждую\s+субботу|"
+            r"по\s+воскресеньям|каждое\s+воскресенье|по\s+будням|в\s+будни|в\s+будние\s+дни|"
+            r"каждый\s+будний\s+день|по\s+будним\s+дням|с\s+понедельника\s+по\s+пятницу|"
+            r"каждый\s+день|ежедневно|каждое\s+утро|каждый\s+вечер|каждую\s+неделю|еженедельно|каждый\s+месяц|ежемесячно)\b"
+        )
+
+        is_meeting_intent = (
+            "встреч" in low
+            or "созвон" in low
+            or any(w in low for w in ["планерк", "стендап", "синк", "митинг"])
+        )
+
+        if is_meeting_intent:
             title = text.strip()
             for prefix in ["добавь встречу с", "поставь встречу с", "добавь встречу", "поставь встречу", "у меня встреча с", "встреча с"]:
                 if prefix in low:
@@ -505,8 +603,10 @@ class LLMOrchestrator:
                     title = "Встреча с " + text[idx:].strip()
                     break
 
-            title_clean = re.sub(r"завтра|сегодня|послезавтра|в \d{1,2}[:.]\d{2}|в \d{1,2}|в пятницу", "", title, flags=re.IGNORECASE).strip()
-            title_clean = title_clean or "Встреча"
+            title_clean = re.sub(r"завтра|сегодня|послезавтра|в \d{1,2}[:.]\d{2}|в \d{1,2}|в пятницу", "", title, flags=re.IGNORECASE)
+            title_clean = re.sub(rec_strip, "", title_clean, flags=re.IGNORECASE).strip()
+            title_clean = re.sub(r"^[\s,.-]+|[\s,.-]+$", "", title_clean)
+            title_clean = title_clean.capitalize() if title_clean else "Встреча"
 
             if not target_time:
                 return AIResponse(
@@ -517,7 +617,8 @@ class LLMOrchestrator:
                         "draft_data": {
                             "title": title_clean,
                             "start_date": str(target_date),
-                            "duration_minutes": 60
+                            "duration_minutes": 60,
+                            "recurrence": recurrence
                         }
                     }
                 )
@@ -528,17 +629,19 @@ class LLMOrchestrator:
                     "title": title_clean,
                     "start_date": str(target_date),
                     "start_time": target_time,
-                    "duration_minutes": 60
+                    "duration_minutes": 60,
+                    "recurrence": recurrence
                 }
             )
 
-        is_reminder = "напомни" in low
+        is_reminder = any(w in low for w in ["напомни", "напоминай"])
         clean_title = re.sub(
-            r"напомни мне|напомни|поставь задачу|нужно|надо|завтра|сегодня|послезавтра|до конца недели|в пятницу|в \d{1,2}(:\d{2})?(\s*утра|\s*вечера|\s*дня)?",
+            r"напоминай мне|напоминай|напомни мне|напомни|поставь задачу|нужно|надо|завтра|сегодня|послезавтра|до конца недели|в пятницу|в \d{1,2}(:\d{2})?(\s*утра|\s*вечера|\s*дня)?",
             "",
             text,
             flags=re.IGNORECASE
-        ).strip()
+        )
+        clean_title = re.sub(rec_strip, "", clean_title, flags=re.IGNORECASE).strip()
         clean_title = clean_title.capitalize() if clean_title else "Задача"
 
         return AIResponse(
@@ -547,6 +650,7 @@ class LLMOrchestrator:
                 "title": clean_title,
                 "due_date": str(target_date),
                 "due_time": target_time,
-                "is_reminder": is_reminder
+                "is_reminder": is_reminder,
+                "recurrence": recurrence
             }
         )

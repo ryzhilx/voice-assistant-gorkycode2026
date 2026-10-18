@@ -28,6 +28,7 @@ class CreateTaskParams:
     due_date: Optional[str] = None
     due_time: Optional[str] = None
     is_reminder: bool = False
+    recurrence: Optional[str] = None
 
 @dataclass
 class CreateMeetingParams:
@@ -36,6 +37,7 @@ class CreateMeetingParams:
     start_time: str
     duration_minutes: int = 60
     participants: Optional[str] = None
+    recurrence: Optional[str] = None
 
 @dataclass
 class GetScheduleParams:

@@ -46,6 +46,7 @@ class Database:
                         is_reminder BOOLEAN DEFAULT 0,
                         reminder_sent BOOLEAN DEFAULT 0,
                         status TEXT DEFAULT 'pending',
+                        recurrence TEXT DEFAULT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
@@ -60,6 +61,7 @@ class Database:
                         participants TEXT,
                         reminder_sent BOOLEAN DEFAULT 0,
                         status TEXT DEFAULT 'active',
+                        recurrence TEXT DEFAULT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
@@ -75,6 +77,14 @@ class Database:
                     conn.execute("ALTER TABLE meetings ADD COLUMN status TEXT DEFAULT 'active'")
                 except sqlite3.OperationalError:
                     pass
+                try:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN recurrence TEXT DEFAULT NULL")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE meetings ADD COLUMN recurrence TEXT DEFAULT NULL")
+                except sqlite3.OperationalError:
+                    pass
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_user_date ON tasks(user_id, due_date)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_meetings_user_date ON meetings(user_id, start_date)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_reminder ON tasks(reminder_sent, due_date, due_time)")
@@ -85,13 +95,144 @@ class Database:
             if not self._is_memory:
                 conn.close()
 
+    @staticmethod
+    def matches_recurrence(target_date, base_date, recurrence: Optional[str]) -> bool:
+        if not recurrence:
+            return False
+        if base_date and target_date < base_date:
+            return False
+
+        rec = recurrence.lower().strip()
+        if rec == "daily":
+            return True
+        if rec == "weekdays":
+            return target_date.weekday() < 5
+        if rec == "weekly":
+            if not base_date:
+                return True
+            return target_date.weekday() == base_date.weekday()
+        if rec.startswith("weekly:"):
+            day_str = rec.split(":", 1)[1].strip()
+            day_map = {
+                "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6,
+                "0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6
+            }
+            target_weekday = day_map.get(day_str)
+            if target_weekday is not None:
+                return target_date.weekday() == target_weekday
+            return False
+        if rec == "monthly":
+            if not base_date:
+                return target_date.day == 1
+            import calendar
+            max_day = calendar.monthrange(target_date.year, target_date.month)[1]
+            effective_day = min(base_date.day, max_day)
+            return target_date.day == effective_day
+        return False
+
+    @staticmethod
+    def calculate_next_occurrence(date_str: str, recurrence: str, from_date: Optional[str] = None) -> str:
+        import datetime
+        import calendar
+
+        base_dt = datetime.date.fromisoformat(date_str)
+        curr = base_dt
+        limit_dt = datetime.date.fromisoformat(from_date) if from_date else base_dt
+
+        rec = recurrence.lower().strip()
+
+        if rec == "daily":
+            curr = curr + datetime.timedelta(days=1)
+            while curr <= limit_dt:
+                curr += datetime.timedelta(days=1)
+            return curr.isoformat()
+
+        if rec == "weekdays":
+            curr = curr + datetime.timedelta(days=1)
+            while curr.weekday() >= 5 or curr <= limit_dt:
+                curr += datetime.timedelta(days=1)
+            return curr.isoformat()
+
+        if rec == "weekly":
+            curr = curr + datetime.timedelta(days=7)
+            while curr <= limit_dt:
+                curr += datetime.timedelta(days=7)
+            return curr.isoformat()
+
+        if rec.startswith("weekly:"):
+            day_str = rec.split(":", 1)[1].strip()
+            day_map = {
+                "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6,
+                "0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6
+            }
+            target_weekday = day_map.get(day_str, 0)
+            curr = curr + datetime.timedelta(days=1)
+            while curr.weekday() != target_weekday or curr <= limit_dt:
+                curr += datetime.timedelta(days=1)
+            return curr.isoformat()
+
+        if rec == "monthly":
+            y = curr.year
+            m = curr.month
+            orig_day = base_dt.day
+            while True:
+                m += 1
+                if m > 12:
+                    m = 1
+                    y += 1
+                max_d = calendar.monthrange(y, m)[1]
+                cand = datetime.date(y, m, min(orig_day, max_d))
+                if cand > limit_dt and cand > base_dt:
+                    return cand.isoformat()
+
+        return (curr + datetime.timedelta(days=1)).isoformat()
+
+    async def advance_recurring_task(self, task_id: int, next_date: str) -> bool:
+        def _update():
+            conn = self._get_connection()
+            try:
+                with conn:
+                    cur = conn.execute(
+                        """
+                        UPDATE tasks
+                        SET due_date = ?, reminder_sent = 0, status = 'pending'
+                        WHERE id = ?
+                        """,
+                        (next_date, task_id)
+                    )
+                    return cur.rowcount > 0
+            finally:
+                if not self._is_memory:
+                    conn.close()
+        return await asyncio.to_thread(_update)
+
+    async def advance_recurring_meeting(self, meeting_id: int, next_date: str) -> bool:
+        def _update():
+            conn = self._get_connection()
+            try:
+                with conn:
+                    cur = conn.execute(
+                        """
+                        UPDATE meetings
+                        SET start_date = ?, reminder_sent = 0, status = 'active'
+                        WHERE id = ?
+                        """,
+                        (next_date, meeting_id)
+                    )
+                    return cur.rowcount > 0
+            finally:
+                if not self._is_memory:
+                    conn.close()
+        return await asyncio.to_thread(_update)
+
     async def add_task(
         self,
         user_id: int,
         title: str,
         due_date: Optional[str] = None,
         due_time: Optional[str] = None,
-        is_reminder: bool = False
+        is_reminder: bool = False,
+        recurrence: Optional[str] = None
     ) -> int:
         def _insert():
             conn = self._get_connection()
@@ -100,10 +241,10 @@ class Database:
                     cursor = conn.cursor()
                     cursor.execute(
                         """
-                        INSERT INTO tasks (user_id, title, due_date, due_time, is_reminder)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO tasks (user_id, title, due_date, due_time, is_reminder, recurrence)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
-                        (user_id, title, due_date, due_time, 1 if is_reminder else 0)
+                        (user_id, title, due_date, due_time, 1 if is_reminder else 0, recurrence)
                     )
                     return cursor.lastrowid
             finally:
@@ -118,7 +259,8 @@ class Database:
         start_date: str,
         start_time: str,
         duration_minutes: int = 60,
-        participants: Optional[str] = None
+        participants: Optional[str] = None,
+        recurrence: Optional[str] = None
     ) -> int:
         def _insert():
             conn = self._get_connection()
@@ -127,10 +269,10 @@ class Database:
                     cursor = conn.cursor()
                     cursor.execute(
                         """
-                        INSERT INTO meetings (user_id, title, start_date, start_time, duration_minutes, participants)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT INTO meetings (user_id, title, start_date, start_time, duration_minutes, participants, recurrence)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (user_id, title, start_date, start_time, duration_minutes, participants)
+                        (user_id, title, start_date, start_time, duration_minutes, participants, recurrence)
                     )
                     return cursor.lastrowid
             finally:
@@ -149,9 +291,9 @@ class Database:
             conn = self._get_connection()
             try:
                 query = """
-                    SELECT id, title, start_date, start_time
+                    SELECT id, title, start_date, start_time, recurrence
                     FROM meetings
-                    WHERE user_id = ? AND start_date = ? AND start_time = ?
+                    WHERE user_id = ? AND (recurrence IS NULL OR recurrence = '') AND start_date = ? AND start_time = ?
                 """
                 params = [user_id, start_date, start_time]
                 if exclude_id is not None:
@@ -159,7 +301,28 @@ class Database:
                     params.append(exclude_id)
                 query += " LIMIT 1"
                 row = conn.execute(query, tuple(params)).fetchone()
-                return dict(row) if row else None
+                if row:
+                    return dict(row)
+
+                rec_query = """
+                    SELECT id, title, start_date, start_time, recurrence
+                    FROM meetings
+                    WHERE user_id = ? AND recurrence IS NOT NULL AND recurrence != '' AND start_time = ? AND status != 'archived'
+                """
+                rec_params = [user_id, start_time]
+                if exclude_id is not None:
+                    rec_query += " AND id != ?"
+                    rec_params.append(exclude_id)
+                rec_rows = conn.execute(rec_query, tuple(rec_params)).fetchall()
+                if rec_rows:
+                    import datetime
+                    target_dt = datetime.date.fromisoformat(start_date)
+                    for r in rec_rows:
+                        base_d = datetime.date.fromisoformat(r["start_date"]) if r["start_date"] else None
+                        if self.matches_recurrence(target_dt, base_d, r["recurrence"]):
+                            return dict(r)
+
+                return None
             finally:
                 if not self._is_memory:
                     conn.close()
@@ -179,6 +342,7 @@ class Database:
                 SET status = 'archived', reminder_sent = 1
                 WHERE user_id = ?
                   AND status != 'archived'
+                  AND (recurrence IS NULL OR recurrence = '')
                   AND (
                       start_date < ?
                       OR (start_date = ? AND start_time <= ? AND reminder_sent = 1)
@@ -195,6 +359,7 @@ class Database:
                 WHERE user_id = ?
                   AND status != 'archived'
                   AND is_reminder = 1
+                  AND (recurrence IS NULL OR recurrence = '')
                   AND (
                       due_date < ?
                       OR (due_date = ? AND due_time IS NOT NULL AND due_time <= ? AND reminder_sent = 1)
@@ -210,6 +375,7 @@ class Database:
                 SET status = 'archived'
                 WHERE user_id = ?
                   AND status = 'completed'
+                  AND (recurrence IS NULL OR recurrence = '')
                   AND (
                       due_date < ?
                       OR (due_date = ? AND (due_time IS NOT NULL AND due_time <= ?))
@@ -291,29 +457,84 @@ class Database:
             meetings = []
             try:
                 status_cond = "" if include_archived else "AND status != 'archived'"
+                import datetime
+
+                start_dt = datetime.date.fromisoformat(start_date)
+                end_dt = datetime.date.fromisoformat(end_date)
+
                 if filter_type in ("all", "tasks"):
                     rows = conn.execute(
                         f"""
-                        SELECT id, title, due_date, due_time, is_reminder, status
+                        SELECT id, title, due_date, due_time, is_reminder, status, recurrence
                         FROM tasks
-                        WHERE user_id = ? AND due_date BETWEEN ? AND ? {status_cond}
+                        WHERE user_id = ? AND (recurrence IS NULL OR recurrence = '') AND due_date BETWEEN ? AND ? {status_cond}
                         ORDER BY due_time ASC
                         """,
                         (user_id, start_date, end_date)
                     ).fetchall()
                     tasks = [dict(r) for r in rows]
 
+                    rec_rows = conn.execute(
+                        f"""
+                        SELECT id, title, due_date, due_time, is_reminder, status, recurrence
+                        FROM tasks
+                        WHERE user_id = ? AND recurrence IS NOT NULL AND recurrence != '' {status_cond}
+                        ORDER BY due_time ASC
+                        """,
+                        (user_id,)
+                    ).fetchall()
+
+                    for r in rec_rows:
+                        rec_dict = dict(r)
+                        rec_val = rec_dict.get("recurrence")
+                        base_d = datetime.date.fromisoformat(rec_dict["due_date"]) if rec_dict.get("due_date") else None
+
+                        cur_day = start_dt
+                        while cur_day <= end_dt:
+                            if self.matches_recurrence(cur_day, base_d, rec_val):
+                                item = dict(rec_dict)
+                                item["due_date"] = cur_day.isoformat()
+                                tasks.append(item)
+                            cur_day += datetime.timedelta(days=1)
+
+                    tasks.sort(key=lambda x: (x.get("due_date") or "", x.get("due_time") or ""))
+
                 if filter_type in ("all", "meetings"):
                     rows = conn.execute(
                         f"""
-                        SELECT id, title, start_date, start_time, duration_minutes, participants, status
+                        SELECT id, title, start_date, start_time, duration_minutes, participants, status, recurrence
                         FROM meetings
-                        WHERE user_id = ? AND start_date BETWEEN ? AND ? {status_cond}
+                        WHERE user_id = ? AND (recurrence IS NULL OR recurrence = '') AND start_date BETWEEN ? AND ? {status_cond}
                         ORDER BY start_time ASC
                         """,
                         (user_id, start_date, end_date)
                     ).fetchall()
                     meetings = [dict(r) for r in rows]
+
+                    rec_rows = conn.execute(
+                        f"""
+                        SELECT id, title, start_date, start_time, duration_minutes, participants, status, recurrence
+                        FROM meetings
+                        WHERE user_id = ? AND recurrence IS NOT NULL AND recurrence != '' {status_cond}
+                        ORDER BY start_time ASC
+                        """,
+                        (user_id,)
+                    ).fetchall()
+
+                    for r in rec_rows:
+                        rec_dict = dict(r)
+                        rec_val = rec_dict.get("recurrence")
+                        base_d = datetime.date.fromisoformat(rec_dict["start_date"]) if rec_dict.get("start_date") else None
+
+                        cur_day = start_dt
+                        while cur_day <= end_dt:
+                            if self.matches_recurrence(cur_day, base_d, rec_val):
+                                item = dict(rec_dict)
+                                item["start_date"] = cur_day.isoformat()
+                                meetings.append(item)
+                            cur_day += datetime.timedelta(days=1)
+
+                    meetings.sort(key=lambda x: (x.get("start_date") or "", x.get("start_time") or ""))
 
                 return {"tasks": tasks, "meetings": meetings}
             finally:
@@ -400,14 +621,14 @@ class Database:
             try:
                 if record_type in ("all", "tasks"):
                     rows = conn.execute(
-                        "SELECT id, title, due_date as date, due_time as time, status, 'task' as type FROM tasks WHERE user_id = ?",
+                        "SELECT id, title, due_date as date, due_time as time, status, 'task' as type, recurrence FROM tasks WHERE user_id = ?",
                         (user_id,)
                     ).fetchall()
                     records.extend([dict(r) for r in rows])
 
                 if record_type in ("all", "meetings"):
                     rows = conn.execute(
-                        "SELECT id, title, start_date as date, start_time as time, status, 'meeting' as type, participants FROM meetings WHERE user_id = ?",
+                        "SELECT id, title, start_date as date, start_time as time, status, 'meeting' as type, participants, recurrence FROM meetings WHERE user_id = ?",
                         (user_id,)
                     ).fetchall()
                     records.extend([dict(r) for r in rows])
@@ -423,6 +644,24 @@ class Database:
             conn = self._get_connection()
             try:
                 with conn:
+                    row = conn.execute(
+                        "SELECT due_date, recurrence FROM tasks WHERE id = ? AND user_id = ?",
+                        (task_id, user_id)
+                    ).fetchone()
+                    if row and row["recurrence"]:
+                        import datetime
+                        due = row["due_date"] or datetime.date.today().isoformat()
+                        next_date = self.calculate_next_occurrence(due, row["recurrence"])
+                        cur = conn.execute(
+                            """
+                            UPDATE tasks
+                            SET due_date = ?, reminder_sent = 0, status = 'pending'
+                            WHERE id = ? AND user_id = ?
+                            """,
+                            (next_date, task_id, user_id)
+                        )
+                        return cur.rowcount > 0
+
                     cur = conn.execute(
                         "UPDATE tasks SET status = 'completed' WHERE id = ? AND user_id = ?",
                         (task_id, user_id)
@@ -493,7 +732,7 @@ class Database:
                 if record_type in ("meeting", "meetings"):
                     row = conn.execute(
                         """
-                        SELECT id, title, start_date as date, start_time as time, status, 'meeting' as type
+                        SELECT id, title, start_date as date, start_time as time, status, 'meeting' as type, recurrence
                         FROM meetings
                         WHERE user_id = ?
                         ORDER BY id DESC
@@ -506,7 +745,7 @@ class Database:
                 if record_type in ("task", "tasks"):
                     row = conn.execute(
                         """
-                        SELECT id, title, due_date as date, due_time as time, status, 'task' as type
+                        SELECT id, title, due_date as date, due_time as time, status, 'task' as type, recurrence
                         FROM tasks
                         WHERE user_id = ?
                         ORDER BY id DESC
@@ -518,7 +757,7 @@ class Database:
 
                 m_row = conn.execute(
                     """
-                    SELECT id, title, start_date as date, start_time as time, status, 'meeting' as type, created_at
+                    SELECT id, title, start_date as date, start_time as time, status, 'meeting' as type, created_at, recurrence
                     FROM meetings
                     WHERE user_id = ?
                     ORDER BY id DESC
@@ -529,7 +768,7 @@ class Database:
 
                 t_row = conn.execute(
                     """
-                    SELECT id, title, due_date as date, due_time as time, status, 'task' as type, created_at
+                    SELECT id, title, due_date as date, due_time as time, status, 'task' as type, created_at, recurrence
                     FROM tasks
                     WHERE user_id = ?
                     ORDER BY id DESC
@@ -590,7 +829,7 @@ class Database:
             try:
                 rows = conn.execute(
                     """
-                    SELECT t.id, t.user_id, t.title, t.due_date, t.due_time, t.is_reminder,
+                    SELECT t.id, t.user_id, t.title, t.due_date, t.due_time, t.is_reminder, t.recurrence,
                            COALESCE(u.timezone, 'Europe/Moscow') as timezone
                     FROM tasks t
                     LEFT JOIN users u ON t.user_id = u.user_id
@@ -633,7 +872,7 @@ class Database:
             try:
                 rows = conn.execute(
                     """
-                    SELECT m.id, m.user_id, m.title, m.start_date, m.start_time, m.duration_minutes, m.participants,
+                    SELECT m.id, m.user_id, m.title, m.start_date, m.start_time, m.duration_minutes, m.participants, m.recurrence,
                            COALESCE(u.timezone, 'Europe/Moscow') as timezone
                     FROM meetings m
                     LEFT JOIN users u ON m.user_id = u.user_id

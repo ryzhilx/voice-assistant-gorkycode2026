@@ -48,11 +48,13 @@ async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetim
         title = task["title"]
         due_time = task["due_time"]
         is_reminder = bool(task["is_reminder"])
+        recurrence = task.get("recurrence")
 
+        rec_note = " (повторяющаяся)" if recurrence else ""
         if is_reminder:
-            text = f"🔔 Напоминание: «{title}»!"
+            text = f"🔔 Напоминание{rec_note}: «{title}»!"
         else:
-            text = f"⏰ Срок задачи: «{title}» ({due_time})."
+            text = f"⏰ Срок задачи{rec_note}: «{title}» ({due_time})."
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -66,7 +68,11 @@ async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetim
         except Exception as e:
             logger.warning("Failed to send task reminder %s to %s: %s", task_id, user_id, e)
         finally:
-            await db.mark_task_reminder_sent(task_id)
+            if recurrence:
+                next_date = Database.calculate_next_occurrence(task["due_date"], recurrence, from_date=current_date)
+                await db.advance_recurring_task(task_id, next_date)
+            else:
+                await db.mark_task_reminder_sent(task_id)
 
     for meeting in due_meetings:
         if now is None:
@@ -86,8 +92,10 @@ async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetim
         title = meeting["title"]
         start_time = meeting["start_time"]
         participants = meeting.get("participants")
+        recurrence = meeting.get("recurrence")
 
-        text = f"📅 Напоминание о встрече: «{title}» в {start_time}."
+        rec_note = " (повторяющаяся)" if recurrence else ""
+        text = f"📅 Напоминание о встрече{rec_note}: «{title}» в {start_time}."
         if participants:
             text += f"\nУчастники: {participants}"
 
@@ -97,7 +105,11 @@ async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetim
         except Exception as e:
             logger.warning("Failed to send meeting reminder %s to %s: %s", meeting_id, user_id, e)
         finally:
-            await db.mark_meeting_reminder_sent(meeting_id)
+            if recurrence:
+                next_date = Database.calculate_next_occurrence(meeting["start_date"], recurrence, from_date=current_date)
+                await db.advance_recurring_meeting(meeting_id, next_date)
+            else:
+                await db.mark_meeting_reminder_sent(meeting_id)
 
     try:
         await db.archive_past_records()

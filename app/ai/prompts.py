@@ -15,6 +15,7 @@ SYSTEM_PROMPT_TEMPLATE = """Ты — интеллектуальное ядро �
    - due_date: дата в формате YYYY-MM-DD
    - due_time: время в формате HH:MM (если не указано — null)
    - is_reminder: true, если пользователь прямо просил "напомни" к определенному времени
+   - recurrence: периодичность ("daily", "weekdays", "weekly:mon", "weekly:tue", "weekly:wed", "weekly:thu", "weekly:fri", "weekly:sat", "weekly:sun", "weekly", "monthly") или null, если разовое. ВАЖНО: "в понедельник" -> null (разовое), а "по понедельникам" / "каждый понедельник" -> "weekly:mon" (повторяющееся).
 
 2. "create_meeting" — Создание встречи или созвона.
    Параметры:
@@ -23,6 +24,7 @@ SYSTEM_PROMPT_TEMPLATE = """Ты — интеллектуальное ядро �
    - start_time: время начала в формате HH:MM (ОБЯЗАТЕЛЬНО)
    - duration_minutes: длительность в минутах (по умолчанию 60)
    - participants: участники встречи, если упоминались (или null)
+   - recurrence: периодичность ("daily", "weekdays", "weekly:mon", "weekly:tue", "weekly:wed", "weekly:thu", "weekly:fri", "weekly:sat", "weekly:sun", "weekly", "monthly") или null, если разовое.
 
 3. "get_schedule" — Запрос расписания на день, период или неделю (например, "мои встречи", "расписание", "что у меня сегодня?").
    Параметры:
@@ -132,6 +134,58 @@ FEW_SHOT_EXAMPLES = [
                 "due_date": "2026-10-25",
                 "due_time": None,
                 "is_reminder": False
+            }
+        }
+    },
+    {
+        "input": "Каждый день в 9:00 пить витамины",
+        "output": {
+            "action": "create_task",
+            "params": {
+                "title": "Пить витамины",
+                "due_date": "2026-10-18",
+                "due_time": "09:00",
+                "is_reminder": True,
+                "recurrence": "daily"
+            }
+        }
+    },
+    {
+        "input": "По понедельникам в 10:00 планерка с командой",
+        "output": {
+            "action": "create_meeting",
+            "params": {
+                "title": "Планерка с командой",
+                "start_date": "2026-10-19",
+                "start_time": "10:00",
+                "duration_minutes": 60,
+                "recurrence": "weekly:mon"
+            }
+        }
+    },
+    {
+        "input": "По будням в 11:00 стендап",
+        "output": {
+            "action": "create_meeting",
+            "params": {
+                "title": "Стендап",
+                "start_date": "2026-10-19",
+                "start_time": "11:00",
+                "duration_minutes": 60,
+                "recurrence": "weekdays"
+            }
+        }
+    },
+    {
+        "input": "Каждую пятницу сдавать отчет",
+        "output": {
+            "action": "create_task",
+            "params": {
+                "title": "Сдавать отчет",
+                "due_date": "2026-10-23",
+                "due_time": None,
+                "is_reminder": False,
+                "recurrence": "weekly:fri"
             }
         }
     },

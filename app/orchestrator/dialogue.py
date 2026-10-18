@@ -89,6 +89,25 @@ class DialogueOrchestrator:
 
         return await self._execute_single_action(chat_id, result.action, result.params, result.user_reply)
 
+    @staticmethod
+    def _format_recurrence(recurrence: Optional[str]) -> str:
+        if not recurrence:
+            return ""
+        mapping = {
+            "daily": "ежедневно",
+            "weekdays": "по будням",
+            "weekly": "еженедельно",
+            "weekly:mon": "каждый понедельник",
+            "weekly:tue": "каждый вторник",
+            "weekly:wed": "каждую среду",
+            "weekly:thu": "каждый четверг",
+            "weekly:fri": "каждую пятницу",
+            "weekly:sat": "каждую субботу",
+            "weekly:sun": "каждое воскресенье",
+            "monthly": "ежемесячно"
+        }
+        return mapping.get(recurrence, recurrence)
+
     async def _execute_single_action(
         self,
         chat_id: int,
@@ -105,13 +124,15 @@ class DialogueOrchestrator:
             due_date = params.get("due_date")
             due_time = params.get("due_time")
             is_reminder = bool(params.get("is_reminder", False))
+            recurrence = params.get("recurrence")
 
             task_id = await self.db.add_task(
                 user_id=chat_id,
                 title=title,
                 due_date=due_date,
                 due_time=due_time,
-                is_reminder=is_reminder
+                is_reminder=is_reminder,
+                recurrence=recurrence
             )
             self._last_event[chat_id] = {
                 "id": task_id,
@@ -119,15 +140,17 @@ class DialogueOrchestrator:
                 "date": due_date,
                 "time": due_time,
                 "type": "task",
-                "is_reminder": is_reminder
+                "is_reminder": is_reminder,
+                "recurrence": recurrence
             }
 
             date_info = f" на {due_date}" if due_date else ""
             time_info = f" в {due_time}" if due_time else ""
+            rec_badge = f" (🔄 {self._format_recurrence(recurrence)})" if recurrence else ""
             prefix = "Напоминание установлено" if is_reminder else "Задача добавлена"
             if title.strip().lower() in ["задача", "напоминание", "task"]:
-                return Reply(f"{prefix}{date_info}{time_info}.")
-            return Reply(f"{prefix}: «{title}»{date_info}{time_info}.")
+                return Reply(f"{prefix}{date_info}{time_info}{rec_badge}.")
+            return Reply(f"{prefix}: «{title}»{date_info}{time_info}{rec_badge}.")
 
         if action == AIAction.CREATE_MEETING:
             title = params.get("title", "Встреча")
@@ -135,6 +158,7 @@ class DialogueOrchestrator:
             start_time = params.get("start_time")
             duration = int(params.get("duration_minutes", 60))
             participants = params.get("participants")
+            recurrence = params.get("recurrence")
 
             conflict = await self.db.check_meeting_conflict(chat_id, start_date, start_time)
             meeting_id = await self.db.add_meeting(
@@ -143,20 +167,23 @@ class DialogueOrchestrator:
                 start_date=start_date,
                 start_time=start_time,
                 duration_minutes=duration,
-                participants=participants
+                participants=participants,
+                recurrence=recurrence
             )
             self._last_event[chat_id] = {
                 "id": meeting_id,
                 "title": title,
                 "date": start_date,
                 "time": start_time,
-                "type": "meeting"
+                "type": "meeting",
+                "recurrence": recurrence
             }
 
+            rec_badge = f" (🔄 {self._format_recurrence(recurrence)})" if recurrence else ""
             if title.strip().lower() in ["встреча", "созвон", "meeting"]:
-                response_text = f"Встреча назначена на {start_date} в {start_time}."
+                response_text = f"Встреча назначена на {start_date} в {start_time}{rec_badge}."
             else:
-                response_text = f"Встреча «{title}» назначена на {start_date} в {start_time}."
+                response_text = f"Встреча «{title}» назначена на {start_date} в {start_time}{rec_badge}."
             if conflict:
                 response_text += f"\nВнимание: в это же время уже стоит «{conflict.get('title')}»."
             return Reply(response_text)
@@ -207,14 +234,16 @@ class DialogueOrchestrator:
                 for m in meetings:
                     t = m.get("start_time") or ""
                     title = m.get("title")
-                    lines.append(f"- {t} {title}")
+                    rec_badge = f" (🔄 {self._format_recurrence(m.get('recurrence'))})" if m.get("recurrence") else ""
+                    lines.append(f"- {t} {title}{rec_badge}")
 
             if tasks:
                 lines.append("\nЗадачи:")
                 for t in tasks:
                     status = "[x]" if t.get("status") == "completed" else "[ ]"
                     tm = f" (до {t.get('due_time')})" if t.get("due_time") else ""
-                    lines.append(f"{status} {t.get('title')}{tm}")
+                    rec_badge = f" (🔄 {self._format_recurrence(t.get('recurrence'))})" if t.get("recurrence") else ""
+                    lines.append(f"{status} {t.get('title')}{tm}{rec_badge}")
 
             return Reply("\n".join(lines))
 
@@ -345,8 +374,13 @@ class DialogueOrchestrator:
 
             rec_id = record["id"]
             title = record.get("title", "Задача")
+            recurrence = record.get("recurrence")
             success = await self.db.mark_task_completed(chat_id, rec_id)
             if success:
+                if recurrence:
+                    next_d = Database.calculate_next_occurrence(record.get("date") or datetime.date.today().isoformat(), recurrence)
+                    self._last_event[chat_id] = {**record, "date": next_d, "status": "pending"}
+                    return Reply(f"Задача «{title}» выполнена! Следующее повторение запланировано на {next_d}. ✅")
                 self._last_event[chat_id] = {**record, "status": "completed"}
                 return Reply(f"Задача «{title}» отмечена как выполненная! ✅")
             return Reply(f"Не удалось обновить статус задачи «{title}».")

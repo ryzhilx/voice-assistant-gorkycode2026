@@ -127,6 +127,52 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.sub_actions[1].action, AIAction.CREATE_TASK)
         self.assertEqual(res.sub_actions[1].params.get("due_time"), "18:00")
 
+    async def test_create_recurring_task_daily(self):
+        self.orchestrator.yandex_api_key = None
+        self.orchestrator.yandex_folder_id = None
+        res = await self.orchestrator.parse_intent("Каждый день в 9:00 пить витамины")
+        self.assertEqual(res.action, AIAction.CREATE_TASK)
+        self.assertEqual(res.params.get("recurrence"), "daily")
+        self.assertEqual(res.params.get("due_time"), "09:00")
+        self.assertIn("витамины", res.params.get("title", "").lower())
+
+    async def test_create_recurring_meeting_weekly(self):
+        self.orchestrator.yandex_api_key = None
+        self.orchestrator.yandex_folder_id = None
+        res = await self.orchestrator.parse_intent("По понедельникам в 10:00 планерка с командой")
+        self.assertEqual(res.action, AIAction.CREATE_MEETING)
+        self.assertEqual(res.params.get("recurrence"), "weekly:mon")
+        self.assertEqual(res.params.get("start_time"), "10:00")
+        self.assertIn("планерка", res.params.get("title", "").lower())
+
+    async def test_create_recurring_task_weekdays(self):
+        self.orchestrator.yandex_api_key = None
+        self.orchestrator.yandex_folder_id = None
+        res = await self.orchestrator.parse_intent("По будням в 9:00 зарядка")
+        self.assertEqual(res.action, AIAction.CREATE_TASK)
+        self.assertEqual(res.params.get("recurrence"), "weekdays")
+        self.assertEqual(res.params.get("due_time"), "09:00")
+
+    async def test_one_off_meeting_does_not_set_recurrence(self):
+        self.orchestrator.yandex_api_key = None
+        self.orchestrator.yandex_folder_id = None
+        res = await self.orchestrator.parse_intent("В понедельник в 10:00 встреча с дизайнером")
+        self.assertEqual(res.action, AIAction.CREATE_MEETING)
+        self.assertIsNone(res.params.get("recurrence"))
+
+    async def test_dialogue_recurring_task_and_schedule(self):
+        from app.orchestrator.dialogue import DialogueOrchestrator
+        from app.storage.db import Database
+        mem_db = Database(":memory:")
+        orch = DialogueOrchestrator(llm=self.orchestrator, db=mem_db)
+
+        reply1 = await orch.handle_text(100, "Каждый день в 9:00 пить витамины")
+        self.assertIn("ежедневно", reply1.text)
+
+        reply2 = await orch.handle_text(100, "Расписание")
+        self.assertIn("ежедневно", reply2.text)
+        self.assertIn("Пить витамины", reply2.text)
+
     def test_system_prompt_includes_timezone_and_calendar(self):
         from app.ai.prompts import get_system_prompt
         prompt_default = get_system_prompt()

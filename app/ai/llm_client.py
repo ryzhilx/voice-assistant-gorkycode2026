@@ -175,12 +175,10 @@ class LLMOrchestrator:
                 pass
 
         if recurrence == "daily":
-            return today + datetime.timedelta(days=1) if time_passed else today
+            return today
 
         if recurrence == "weekdays":
             cand = today
-            if time_passed or cand.weekday() >= 5:
-                cand = cand + datetime.timedelta(days=1)
             while cand.weekday() >= 5:
                 cand = cand + datetime.timedelta(days=1)
             return cand
@@ -190,12 +188,10 @@ class LLMOrchestrator:
             day_map = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
             target_wd = day_map.get(day_code, 0)
             days_ahead = (target_wd - today.weekday()) % 7
-            if days_ahead == 0 and time_passed:
-                days_ahead = 7
             return today + datetime.timedelta(days=days_ahead)
 
         if recurrence == "weekly":
-            return today + datetime.timedelta(days=7) if time_passed else today
+            return today
 
         if recurrence == "monthly":
             return today

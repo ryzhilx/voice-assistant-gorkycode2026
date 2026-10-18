@@ -39,6 +39,9 @@ async def main():
             await worker_task
         except asyncio.CancelledError:
             pass
+        from app.bot.handlers import orchestrator, stt
+        await orchestrator.aclose()
+        await stt.aclose()
 
 
 if __name__ == "__main__":

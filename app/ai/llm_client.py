@@ -11,11 +11,23 @@ from app.ai.prompts import get_system_prompt
 logger = logging.getLogger(__name__)
 
 class LLMOrchestrator:
-    def __init__(self):
+    def __init__(self, http_client: Optional[httpx.AsyncClient] = None):
         self.yandex_api_key = settings.yandex_api_key
         self.yandex_folder_id = settings.yandex_folder_id
         self.gigachat_credentials = settings.gigachat_credentials
         self._current_timezone: str = "Europe/Moscow"
+        self._http_client = http_client
+        self._owns_client = False
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(timeout=15.0)
+            self._owns_client = True
+        return self._http_client
+
+    async def aclose(self) -> None:
+        if self._owns_client and self._http_client and not self._http_client.is_closed:
+            await self._http_client.aclose()
 
     def set_current_timezone(self, tz: str) -> None:
         if tz:
@@ -291,61 +303,61 @@ class LLMOrchestrator:
             "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": 1000},
             "messages": messages
         }
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code == 200:
-                data = resp.json()
-                raw_text = data["result"]["alternatives"][0]["message"]["text"]
-                match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-                if match:
-                    parsed = json.loads(match.group(0))
-                    action_val = parsed.get("action")
-                    if action_val == AIAction.MULTI_ACTION.value or "sub_actions" in parsed or "actions" in parsed:
-                        raw_subs = parsed.get("sub_actions") or parsed.get("actions", [])
-                        parsed_subs = []
-                        for sub_item in raw_subs:
-                            sub_act = sub_item.get("action")
-                            sub_p = sub_item.get("params", {})
-                            if sub_act in [a.value for a in AIAction]:
-                                parsed_subs.append(AIResponse(action=AIAction(sub_act), params=sub_p))
-                        if parsed_subs:
-                            return AIResponse(
-                                action=AIAction.MULTI_ACTION,
-                                params={},
-                                sub_actions=parsed_subs
-                            )
-
-                    if action_val in [a.value for a in AIAction]:
-                        params = parsed.get("params", {})
-                        if action_val == AIAction.GET_SCHEDULE.value:
-                            now_date_str = str(datetime.datetime.now().date())
-                            if not params.get("start_date"):
-                                params["start_date"] = now_date_str
-                            if not params.get("end_date"):
-                                params["end_date"] = params["start_date"]
-
-                        if action_val in [AIAction.CREATE_MEETING.value, AIAction.CREATE_TASK.value]:
-                            time_key = "start_time" if action_val == AIAction.CREATE_MEETING.value else "due_time"
-                            val_time = params.get(time_key)
-                            if val_time and isinstance(val_time, str):
-                                low_text = text.lower()
-                                time_match = re.search(r"\b([01]?\d|2[0-3])[:.-](\d{2})\b", low_text)
-                                if time_match:
-                                    explicit_h = int(time_match.group(1))
-                                    explicit_m = int(time_match.group(2))
-                                    has_pm_word = any(w in low_text for w in ["дня", "вечера", "pm"])
-                                    if not has_pm_word:
-                                        params[time_key] = f"{explicit_h:02d}:{explicit_m:02d}"
-
-                            if not params.get("recurrence"):
-                                rec = self._extract_recurrence(text)
-                                if rec:
-                                    params["recurrence"] = rec
-
+        client = self._get_client()
+        resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code == 200:
+            data = resp.json()
+            raw_text = data["result"]["alternatives"][0]["message"]["text"]
+            match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+            if match:
+                parsed = json.loads(match.group(0))
+                action_val = parsed.get("action")
+                if action_val == AIAction.MULTI_ACTION.value or "sub_actions" in parsed or "actions" in parsed:
+                    raw_subs = parsed.get("sub_actions") or parsed.get("actions", [])
+                    parsed_subs = []
+                    for sub_item in raw_subs:
+                        sub_act = sub_item.get("action")
+                        sub_p = sub_item.get("params", {})
+                        if sub_act in [a.value for a in AIAction]:
+                            parsed_subs.append(AIResponse(action=AIAction(sub_act), params=sub_p))
+                    if parsed_subs:
                         return AIResponse(
-                            action=AIAction(action_val),
-                            params=params
+                            action=AIAction.MULTI_ACTION,
+                            params={},
+                            sub_actions=parsed_subs
                         )
+
+                if action_val in [a.value for a in AIAction]:
+                    params = parsed.get("params", {})
+                    if action_val == AIAction.GET_SCHEDULE.value:
+                        now_date_str = str(datetime.datetime.now().date())
+                        if not params.get("start_date"):
+                            params["start_date"] = now_date_str
+                        if not params.get("end_date"):
+                            params["end_date"] = params["start_date"]
+
+                    if action_val in [AIAction.CREATE_MEETING.value, AIAction.CREATE_TASK.value]:
+                        time_key = "start_time" if action_val == AIAction.CREATE_MEETING.value else "due_time"
+                        val_time = params.get(time_key)
+                        if val_time and isinstance(val_time, str):
+                            low_text = text.lower()
+                            time_match = re.search(r"\b([01]?\d|2[0-3])[:.-](\d{2})\b", low_text)
+                            if time_match:
+                                explicit_h = int(time_match.group(1))
+                                explicit_m = int(time_match.group(2))
+                                has_pm_word = any(w in low_text for w in ["дня", "вечера", "pm"])
+                                if not has_pm_word:
+                                    params[time_key] = f"{explicit_h:02d}:{explicit_m:02d}"
+
+                        if not params.get("recurrence"):
+                            rec = self._extract_recurrence(text)
+                            if rec:
+                                params["recurrence"] = rec
+
+                    return AIResponse(
+                        action=AIAction(action_val),
+                        params=params
+                    )
         return None
 
     async def _call_gigachat(self, text: str) -> Optional[AIResponse]:

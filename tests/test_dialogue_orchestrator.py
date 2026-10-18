@@ -171,6 +171,7 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         meetings = (await self.db.get_schedule(CHAT, "2020-01-01", "2030-01-01", filter_type="meetings"))["meetings"]
         self.assertEqual(len(meetings), 1)
         self.assertEqual(meetings[0]["start_time"], "16:30")
+        await orch.aclose()
 
     async def test_delete_update_complete_records(self):
         llm_real = LLMOrchestrator()
@@ -202,6 +203,7 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
 
         meetings = (await self.db.get_schedule(CHAT, "2020-01-01", "2030-01-01", filter_type="meetings"))["meetings"]
         self.assertEqual(len(meetings), 0)
+        await orch.aclose()
 
 
 if __name__ == "__main__":

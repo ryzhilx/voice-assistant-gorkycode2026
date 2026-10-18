@@ -43,6 +43,12 @@ class DialogueOrchestrator:
         self._pending.pop(chat_id, None)
         self._history.pop(chat_id, None)
 
+    async def aclose(self) -> None:
+        if hasattr(self.llm, "aclose") and callable(getattr(self.llm, "aclose")):
+            await self.llm.aclose()
+        if hasattr(self.search_engine, "aclose") and callable(getattr(self.search_engine, "aclose")):
+            await self.search_engine.aclose()
+
     async def handle_text(self, chat_id: int, text: str) -> Reply:
         if hasattr(self.llm, "set_current_timezone") and callable(getattr(self.llm, "set_current_timezone")):
             try:

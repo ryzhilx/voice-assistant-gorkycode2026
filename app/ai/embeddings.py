@@ -8,9 +8,21 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 class SemanticSearchEngine:
-    def __init__(self):
+    def __init__(self, http_client: Optional[httpx.AsyncClient] = None):
         self.yandex_api_key = settings.yandex_api_key
         self.yandex_folder_id = settings.yandex_folder_id
+        self._http_client = http_client
+        self._owns_client = False
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(timeout=10.0)
+            self._owns_client = True
+        return self._http_client
+
+    async def aclose(self) -> None:
+        if self._owns_client and self._http_client and not self._http_client.is_closed:
+            await self._http_client.aclose()
 
     @staticmethod
     def stem_word(w: str) -> str:
@@ -40,10 +52,10 @@ class SemanticSearchEngine:
             "modelUri": f"emb://{self.yandex_folder_id}/text-search-query/latest",
             "text": text
         }
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code == 200:
-                return resp.json().get("embedding")
+        client = self._get_client()
+        resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code == 200:
+            return resp.json().get("embedding")
         return None
 
     def _local_vectorize(self, text: str, dim: int = 256) -> List[float]:

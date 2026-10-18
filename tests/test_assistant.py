@@ -9,6 +9,9 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.orchestrator = LLMOrchestrator()
 
+    async def asyncTearDown(self):
+        await self.orchestrator.aclose()
+
     async def test_create_task_with_relative_date(self):
         res = await self.orchestrator.parse_intent("Напомни мне завтра в 10 утра позвонить Ивану")
         self.assertEqual(res.action, AIAction.CREATE_TASK)
@@ -189,6 +192,9 @@ class TestSemanticSearch(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.engine = SemanticSearchEngine()
 
+    async def asyncTearDown(self):
+        await self.engine.aclose()
+
     async def test_local_similarity(self):
         records = [
             {"id": 1, "title": "Согласовать контракт с поставщиком", "type": "task"},
@@ -209,6 +215,7 @@ class TestSemanticSearch(unittest.IsolatedAsyncioTestCase):
         orch.yandex_api_key = None
         orch.yandex_folder_id = None
         res = await orch.parse_intent("Я когда-то ставил задачу по договору, найди ее")
+        await orch.aclose()
         self.assertEqual(res.action, AIAction.SEARCH_RECORDS)
         self.assertEqual(res.params.get("record_type"), "tasks")
         ranked = self.engine.rank_records(res.params.get("query"), records, top_k=1)
@@ -233,6 +240,9 @@ class TestSemanticSearch(unittest.IsolatedAsyncioTestCase):
 class TestYandexCloudLive(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.speech = YandexSpeechKitService()
+
+    async def asyncTearDown(self):
+        await self.speech.aclose()
 
     async def test_speechkit_roundtrip(self):
         audio = await self.speech.text_to_speech("Тест голосового ассистента")

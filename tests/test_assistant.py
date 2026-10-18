@@ -61,6 +61,18 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.params.get("start_date"), today_str)
         self.assertEqual(res.params.get("start_time"), "02:30")
 
+    async def test_clarification_date_slot_preserves_time(self):
+        import datetime
+        today_str = str(datetime.datetime.now().date())
+        context = {
+            "awaiting_slot": "date",
+            "draft_data": {"title": "Встреча", "start_time": "02:53"}
+        }
+        res = await self.orchestrator.parse_intent("сегодня", context=context)
+        self.assertEqual(res.action, AIAction.CREATE_MEETING)
+        self.assertEqual(res.params.get("start_date"), today_str)
+        self.assertEqual(res.params.get("start_time"), "02:53")
+
     async def test_clarification_with_tomorrow_relative_date(self):
         import datetime
         tomorrow_str = str(datetime.datetime.now().date() + datetime.timedelta(days=1))

@@ -33,25 +33,38 @@ class DialogueOrchestrator:
         self.db = db or Database(settings.database_path)
         self.search_engine = search_engine or SemanticSearchEngine()
         self._pending: Dict[int, PendingClarification] = {}
+        self._history: Dict[int, List[Dict[str, str]]] = {}
 
     def has_pending(self, chat_id: int) -> bool:
         return chat_id in self._pending
 
     def reset(self, chat_id: int) -> None:
         self._pending.pop(chat_id, None)
+        self._history.pop(chat_id, None)
 
     async def handle_text(self, chat_id: int, text: str) -> Reply:
         pending = self._pending.get(chat_id)
         context = {"awaiting_slot": pending.slot, "draft_data": pending.draft} if pending else None
 
         result = await self.llm.parse_intent(text, context)
-        return await self._dispatch(chat_id, result)
+        reply = await self._dispatch(chat_id, result)
+
+        if chat_id not in self._history:
+            self._history[chat_id] = []
+        self._history[chat_id].append({"role": "user", "text": text})
+        self._history[chat_id].append({"role": "assistant", "text": reply.text})
+        if len(self._history[chat_id]) > 6:
+            self._history[chat_id] = self._history[chat_id][-6:]
+
+        return reply
 
     async def _dispatch(self, chat_id: int, result: AIResponse) -> Reply:
         if result.action == AIAction.ASK_CLARIFICATION:
+            prev_draft = self._pending[chat_id].draft if chat_id in self._pending else {}
+            new_draft = {**prev_draft, **result.params.get("draft_data", {})}
             self._pending[chat_id] = PendingClarification(
                 slot=result.params.get("missing_slot"),
-                draft=result.params.get("draft_data", {}),
+                draft=new_draft,
             )
             return Reply(result.params.get("question", DEFAULT_QUESTION))
 

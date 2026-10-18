@@ -3,7 +3,7 @@ import json
 import logging
 import datetime
 import httpx
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from app.config import settings
 from app.ai.schemas import AIResponse, AIAction
 from app.ai.prompts import get_system_prompt
@@ -16,7 +16,12 @@ class LLMOrchestrator:
         self.yandex_folder_id = settings.yandex_folder_id
         self.gigachat_credentials = settings.gigachat_credentials
 
-    async def parse_intent(self, text: str, context: Optional[Dict[str, Any]] = None) -> AIResponse:
+    async def parse_intent(
+        self,
+        text: str,
+        context: Optional[Dict[str, Any]] = None,
+        history: Optional[List[Dict[str, str]]] = None
+    ) -> AIResponse:
         text_clean = text.strip()
         logger.debug("Parsing intent: %s", text_clean)
 
@@ -25,7 +30,7 @@ class LLMOrchestrator:
 
         if self.yandex_api_key and self.yandex_folder_id:
             try:
-                res = await self._call_yandex_gpt(text_clean)
+                res = await self._call_yandex_gpt(text_clean, history=history)
                 if res:
                     return res
             except Exception as e:
@@ -40,6 +45,34 @@ class LLMOrchestrator:
                 logger.warning("GigaChat request failed: %s", e)
 
         return self._heuristic_fallback(text_clean)
+
+    @staticmethod
+    def _extract_date(text: str) -> Optional[datetime.date]:
+        clean = re.sub(r"^(?:на|к|до)\s+", "", text.strip(), flags=re.IGNORECASE)
+        try:
+            import dateparser
+            dt = dateparser.parse(
+                clean,
+                languages=["ru"],
+                settings={
+                    "PREFER_DATES_FROM": "future",
+                    "RELATIVE_BASE": datetime.datetime.now()
+                }
+            )
+            if dt:
+                return dt.date()
+        except Exception:
+            pass
+
+        low = text.lower()
+        now = datetime.datetime.now()
+        if "сегодня" in low:
+            return now.date()
+        if "послезавтра" in low:
+            return now.date() + datetime.timedelta(days=2)
+        if "завтра" in low:
+            return now.date() + datetime.timedelta(days=1)
+        return None
 
     @staticmethod
     def _parse_time(text: str) -> Optional[str]:
@@ -88,59 +121,43 @@ class LLMOrchestrator:
                 params={"reply": "Действие отменено."}
             )
 
-        now = datetime.datetime.now()
-        date_in_answer = None
-        if "сегодня" in low:
-            date_in_answer = now.date()
-        elif "послезавтра" in low:
-            date_in_answer = now.date() + datetime.timedelta(days=2)
-        elif "завтра" in low:
-            date_in_answer = now.date() + datetime.timedelta(days=1)
-        elif "в пятницу" in low:
-            days_ahead = (4 - now.weekday() + 7) % 7
-            date_in_answer = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
-        elif "в субботу" in low:
-            days_ahead = (5 - now.weekday() + 7) % 7
-            date_in_answer = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
-        elif "в воскресенье" in low:
-            days_ahead = (6 - now.weekday() + 7) % 7
-            date_in_answer = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
-        elif "в понедельник" in low:
-            days_ahead = (0 - now.weekday() + 7) % 7
-            date_in_answer = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
-        elif "во вторник" in low:
-            days_ahead = (1 - now.weekday() + 7) % 7
-            date_in_answer = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
-        elif "в среду" in low:
-            days_ahead = (2 - now.weekday() + 7) % 7
-            date_in_answer = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
-        elif "в четверг" in low:
-            days_ahead = (3 - now.weekday() + 7) % 7
-            date_in_answer = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
+        date_found = self._extract_date(answer_text)
+        if date_found:
+            draft["start_date"] = str(date_found)
 
-        if date_in_answer:
-            draft["start_date"] = str(date_in_answer)
-        elif not draft.get("start_date"):
-            draft["start_date"] = str(now.date())
+        time_found = self._parse_time(answer_text)
+        if time_found:
+            draft["start_time"] = time_found
 
-        if missing_slot == "time":
-            extracted_time = self._parse_time(answer_text)
-            if extracted_time:
-                draft["start_time"] = extracted_time
+        if missing_slot == "title" and not draft.get("title"):
+            draft["title"] = answer_text.strip().capitalize()
+
+        if draft.get("start_date") and draft.get("start_time"):
+            if not draft.get("title"):
+                draft["title"] = "Встреча"
+            return AIResponse(
+                action=AIAction.CREATE_MEETING,
+                params=draft,
+                user_reply=f"Поставил встречу '{draft.get('title')}' на {draft.get('start_date')} в {draft.get('start_time')}."
+            )
+
+        if draft.get("start_time") and not draft.get("start_date"):
+            if missing_slot == "time":
+                draft["start_date"] = str(datetime.datetime.now().date())
                 if not draft.get("title"):
                     draft["title"] = "Встреча"
                 return AIResponse(
                     action=AIAction.CREATE_MEETING,
                     params=draft,
-                    user_reply=f"Поставил встречу '{draft.get('title')}' на {draft.get('start_date')} в {extracted_time}."
+                    user_reply=f"Поставил встречу '{draft.get('title')}' на {draft.get('start_date')} в {draft.get('start_time')}."
                 )
-
-            if re.search(r"\d{1,2}[:.-]\d{2}", answer_text):
+            else:
+                title = draft.get("title") or "Встреча"
                 return AIResponse(
                     action=AIAction.ASK_CLARIFICATION,
                     params={
-                        "missing_slot": "time",
-                        "question": "Кажется, время указано с ошибкой. Напишите время в формате ЧЧ:ММ (например, 15:00 или 18:30):",
+                        "missing_slot": "date",
+                        "question": f"На какую дату планируете встречу «{title}»?",
                         "draft_data": draft
                     }
                 )
@@ -155,19 +172,21 @@ class LLMOrchestrator:
             }
         )
 
-    async def _call_yandex_gpt(self, text: str) -> Optional[AIResponse]:
+    async def _call_yandex_gpt(self, text: str, history: Optional[List[Dict[str, str]]] = None) -> Optional[AIResponse]:
         url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
         headers = {
             "Authorization": f"Api-Key {self.yandex_api_key}",
             "x-folder-id": self.yandex_folder_id
         }
+        messages = [{"role": "system", "text": get_system_prompt()}]
+        if history:
+            messages.extend(history[-4:])
+        messages.append({"role": "user", "text": text})
+
         payload = {
             "modelUri": f"gpt://{self.yandex_folder_id}/yandexgpt/latest",
             "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": 1000},
-            "messages": [
-                {"role": "system", "text": get_system_prompt()},
-                {"role": "user", "text": text}
-            ]
+            "messages": messages
         }
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(url, headers=headers, json=payload)
@@ -290,16 +309,8 @@ class LLMOrchestrator:
                 }
             )
 
-        target_date = now.date()
-        if "завтра" in low:
-            target_date = now.date() + datetime.timedelta(days=1)
-        elif "послезавтра" in low:
-            target_date = now.date() + datetime.timedelta(days=2)
-        elif "в пятницу" in low:
-            days_ahead = (4 - now.weekday() + 7) % 7
-            target_date = now.date() + datetime.timedelta(days=days_ahead if days_ahead > 0 else 7)
-        elif "до конца недели" in low:
-            target_date = now.date() + datetime.timedelta(days=(6 - now.weekday()))
+        parsed_date = self._extract_date(low)
+        target_date = parsed_date if parsed_date else now.date()
 
         target_time = self._parse_time(low)
         if not target_time and "через два часа" in low:

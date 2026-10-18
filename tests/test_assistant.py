@@ -114,6 +114,19 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.action, AIAction.SEARCH_RECORDS)
         self.assertIn("презентаци", res.params.get("query", ""))
 
+    async def test_multi_intent_parsing(self):
+        self.orchestrator.yandex_api_key = None
+        self.orchestrator.yandex_folder_id = None
+        query = "Поставь встречу с Михаилом завтра в 14:00 и напомни купить кофе в 18:00"
+        res = await self.orchestrator.parse_intent(query)
+        self.assertEqual(res.action, AIAction.MULTI_ACTION)
+        self.assertIsNotNone(res.sub_actions)
+        self.assertEqual(len(res.sub_actions), 2)
+        self.assertEqual(res.sub_actions[0].action, AIAction.CREATE_MEETING)
+        self.assertEqual(res.sub_actions[0].params.get("start_time"), "14:00")
+        self.assertEqual(res.sub_actions[1].action, AIAction.CREATE_TASK)
+        self.assertEqual(res.sub_actions[1].params.get("due_time"), "18:00")
+
     def test_system_prompt_includes_timezone_and_calendar(self):
         from app.ai.prompts import get_system_prompt
         prompt_default = get_system_prompt()

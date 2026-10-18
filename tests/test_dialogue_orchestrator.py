@@ -124,6 +124,32 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("None", reply.text)
         self.assertIn("нет запланированных встреч", reply.text)
 
+    async def test_multi_action_executes_all_and_formats_reply(self):
+        self.llm.parse_intent.return_value = AIResponse(
+            action=AIAction.MULTI_ACTION,
+            params={},
+            sub_actions=[
+                AIResponse(
+                    action=AIAction.CREATE_MEETING,
+                    params={"title": "Синхронизация", "start_date": "2026-10-19", "start_time": "14:00"}
+                ),
+                AIResponse(
+                    action=AIAction.CREATE_TASK,
+                    params={"title": "Купить чай", "due_date": "2026-10-18", "due_time": "18:00", "is_reminder": True}
+                )
+            ]
+        )
+        reply = await self.orch.handle_text(CHAT, "Поставь встречу и напомни купить чай")
+        self.assertIn("1️⃣", reply.text)
+        self.assertIn("2️⃣", reply.text)
+        self.assertIn("Синхронизация", reply.text)
+        self.assertIn("Купить чай", reply.text)
+
+        sched = await self.db.get_schedule(CHAT, "2026-10-18", "2026-10-19")
+        self.assertEqual(len(sched["meetings"]), 1)
+        self.assertEqual(len(sched["tasks"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
 

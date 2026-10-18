@@ -221,6 +221,21 @@ class LLMOrchestrator:
                 if match:
                     parsed = json.loads(match.group(0))
                     action_val = parsed.get("action")
+                    if action_val == AIAction.MULTI_ACTION.value or "sub_actions" in parsed or "actions" in parsed:
+                        raw_subs = parsed.get("sub_actions") or parsed.get("actions", [])
+                        parsed_subs = []
+                        for sub_item in raw_subs:
+                            sub_act = sub_item.get("action")
+                            sub_p = sub_item.get("params", {})
+                            if sub_act in [a.value for a in AIAction]:
+                                parsed_subs.append(AIResponse(action=AIAction(sub_act), params=sub_p))
+                        if parsed_subs:
+                            return AIResponse(
+                                action=AIAction.MULTI_ACTION,
+                                params={},
+                                sub_actions=parsed_subs
+                            )
+
                     if action_val in [a.value for a in AIAction]:
                         params = parsed.get("params", {})
                         if action_val == AIAction.GET_SCHEDULE.value:
@@ -252,7 +267,47 @@ class LLMOrchestrator:
     async def _call_gigachat(self, text: str) -> Optional[AIResponse]:
         return None
 
+    def _split_multi_query(self, text: str) -> List[str]:
+        raw = text.strip()
+        if "\n" in raw:
+            lines = [line.strip() for line in raw.split("\n") if line.strip()]
+            if len(lines) > 1:
+                return lines
+
+        if ";" in raw:
+            parts = [p.strip() for p in raw.split(";") if p.strip()]
+            if len(parts) > 1:
+                return parts
+
+        command_verbs = (
+            r"(?:напомни|поставь|добавь|назначь|запиши|создай|созвон|встреча|встречу|задачу|задача|"
+            r"покажи|что у меня|какие планы|какие встречи|какие задачи|найди|поищи|купи|купить|сделай|сделать)"
+        )
+        pattern = rf"(?:,\s*(?:а\s+также|а\s+еще|также|потом|затем|плюс|и)\s+|,\s*(?={command_verbs}\b)|\s+и\s+(?={command_verbs}\b))"
+        parts = re.split(pattern, raw, flags=re.IGNORECASE)
+        clean_parts = [p.strip() for p in parts if p.strip()]
+        if len(clean_parts) > 1:
+            return clean_parts
+
+        return [raw]
+
     def _heuristic_fallback(self, text: str) -> AIResponse:
+        parts = self._split_multi_query(text)
+        if len(parts) > 1:
+            sub_res = []
+            for p in parts:
+                r = self._single_heuristic(p)
+                if r.action != AIAction.UNKNOWN:
+                    sub_res.append(r)
+            if len(sub_res) > 1:
+                return AIResponse(
+                    action=AIAction.MULTI_ACTION,
+                    params={},
+                    sub_actions=sub_res
+                )
+        return self._single_heuristic(text)
+
+    def _single_heuristic(self, text: str) -> AIResponse:
         try:
             from zoneinfo import ZoneInfo
             now = datetime.datetime.now(ZoneInfo(self._current_timezone)).replace(tzinfo=None)

@@ -73,19 +73,37 @@ class DialogueOrchestrator:
                 slot=result.params.get("missing_slot"),
                 draft=new_draft,
             )
-            return Reply(result.params.get("question", DEFAULT_QUESTION))
+            reply = Reply(result.params.get("question", DEFAULT_QUESTION))
+            return reply
 
         self.reset(chat_id)
 
-        if result.action == AIAction.CHAT:
-            reply_text = result.params.get("reply") or result.user_reply or "Чем я могу вам помочь?"
+        if result.action == AIAction.MULTI_ACTION or result.sub_actions:
+            sub_actions = result.sub_actions or []
+            replies = []
+            for idx, sub in enumerate(sub_actions, 1):
+                sub_reply = await self._execute_single_action(chat_id, sub.action, sub.params, sub.user_reply)
+                replies.append(f"{idx}️⃣ {sub_reply.text}")
+            return Reply("\n\n".join(replies))
+
+        return await self._execute_single_action(chat_id, result.action, result.params, result.user_reply)
+
+    async def _execute_single_action(
+        self,
+        chat_id: int,
+        action: AIAction,
+        params: Dict[str, Any],
+        user_reply: Optional[str] = None
+    ) -> Reply:
+        if action == AIAction.CHAT:
+            reply_text = params.get("reply") or user_reply or "Чем я могу вам помочь?"
             return Reply(reply_text)
 
-        if result.action == AIAction.CREATE_TASK:
-            title = result.params.get("title", "Задача")
-            due_date = result.params.get("due_date")
-            due_time = result.params.get("due_time")
-            is_reminder = bool(result.params.get("is_reminder", False))
+        if action == AIAction.CREATE_TASK:
+            title = params.get("title", "Задача")
+            due_date = params.get("due_date")
+            due_time = params.get("due_time")
+            is_reminder = bool(params.get("is_reminder", False))
 
             await self.db.add_task(
                 user_id=chat_id,
@@ -102,12 +120,12 @@ class DialogueOrchestrator:
                 return Reply(f"{prefix}{date_info}{time_info}.")
             return Reply(f"{prefix}: «{title}»{date_info}{time_info}.")
 
-        if result.action == AIAction.CREATE_MEETING:
-            title = result.params.get("title", "Встреча")
-            start_date = result.params.get("start_date")
-            start_time = result.params.get("start_time")
-            duration = int(result.params.get("duration_minutes", 60))
-            participants = result.params.get("participants")
+        if action == AIAction.CREATE_MEETING:
+            title = params.get("title", "Встреча")
+            start_date = params.get("start_date")
+            start_time = params.get("start_time")
+            duration = int(params.get("duration_minutes", 60))
+            participants = params.get("participants")
 
             conflict = await self.db.check_meeting_conflict(chat_id, start_date, start_time)
             await self.db.add_meeting(
@@ -127,7 +145,7 @@ class DialogueOrchestrator:
                 response_text += f"\nВнимание: в это же время уже стоит «{conflict.get('title')}»."
             return Reply(response_text)
 
-        if result.action == AIAction.GET_SCHEDULE:
+        if action == AIAction.GET_SCHEDULE:
             tz_str = await self.db.get_user_timezone(chat_id)
             try:
                 from zoneinfo import ZoneInfo
@@ -135,9 +153,9 @@ class DialogueOrchestrator:
             except Exception:
                 now_date = datetime.datetime.now().date()
             now_str = str(now_date)
-            start_date = result.params.get("start_date") or now_str
-            end_date = result.params.get("end_date") or start_date
-            filter_type = result.params.get("filter_type", "all")
+            start_date = params.get("start_date") or now_str
+            end_date = params.get("end_date") or start_date
+            filter_type = params.get("filter_type", "all")
 
             data = await self.db.get_schedule(chat_id, start_date, end_date, filter_type)
             tasks = data.get("tasks", [])
@@ -184,13 +202,13 @@ class DialogueOrchestrator:
 
             return Reply("\n".join(lines))
 
-        if result.action == AIAction.GET_ARCHIVE or (result.action == AIAction.GET_SCHEDULE and result.params.get("filter_type") == "archive"):
+        if action == AIAction.GET_ARCHIVE or (action == AIAction.GET_SCHEDULE and params.get("filter_type") == "archive"):
             text_view = await self.get_archive_view(chat_id)
             return Reply(text_view)
 
-        if result.action == AIAction.SEARCH_RECORDS:
-            query = result.params.get("query", "").strip()
-            record_type = result.params.get("record_type", "all")
+        if action == AIAction.SEARCH_RECORDS:
+            query = params.get("query", "").strip()
+            record_type = params.get("record_type", "all")
 
             records = await self.db.get_all_records_for_search(chat_id, record_type)
             if not records:
@@ -209,7 +227,16 @@ class DialogueOrchestrator:
 
             return Reply("\n".join(lines))
 
-        logger.info("Unknown action=%s params=%s", result.action.value, result.params)
+        if action == AIAction.ASK_CLARIFICATION:
+            prev_draft = self._pending[chat_id].draft if chat_id in self._pending else {}
+            new_draft = {**prev_draft, **params.get("draft_data", {})}
+            self._pending[chat_id] = PendingClarification(
+                slot=params.get("missing_slot"),
+                draft=new_draft,
+            )
+            return Reply(params.get("question", DEFAULT_QUESTION))
+
+        logger.info("Unknown action=%s params=%s", action.value, params)
         return Reply("Запрос принят, но действие не определено.")
 
     async def get_archive_view(self, chat_id: int) -> str:

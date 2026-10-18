@@ -1,6 +1,6 @@
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, Literal
+from typing import Optional, Dict, Any, Literal, List
 
 class FilterType(str, Enum):
     ALL = "all"
@@ -15,6 +15,7 @@ class AIAction(str, Enum):
     SEARCH_RECORDS = "search_records"
     ASK_CLARIFICATION = "ask_clarification"
     CHAT = "chat"
+    MULTI_ACTION = "multi_action"
     UNKNOWN = "unknown"
 
 @dataclass
@@ -54,3 +55,4 @@ class AIResponse:
     action: AIAction
     params: Dict[str, Any]
     user_reply: Optional[str] = None
+    sub_actions: Optional[List["AIResponse"]] = None

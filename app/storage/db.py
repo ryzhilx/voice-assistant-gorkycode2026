@@ -552,6 +552,38 @@ class Database:
                     conn.close()
         return await asyncio.to_thread(_get)
 
+    async def delete_record(self, user_id: int, record_type: str, record_id: int) -> bool:
+        def _del():
+            conn = self._get_connection()
+            table = "meetings" if record_type in ("meeting", "meetings") else "tasks"
+            try:
+                with conn:
+                    cur = conn.execute(
+                        f"DELETE FROM {table} WHERE id = ? AND user_id = ?",
+                        (record_id, user_id)
+                    )
+                    return cur.rowcount > 0
+            finally:
+                if not self._is_memory:
+                    conn.close()
+        return await asyncio.to_thread(_del)
+
+    async def update_record_title(self, user_id: int, record_type: str, record_id: int, new_title: str) -> bool:
+        def _upd():
+            conn = self._get_connection()
+            table = "meetings" if record_type in ("meeting", "meetings") else "tasks"
+            try:
+                with conn:
+                    cur = conn.execute(
+                        f"UPDATE {table} SET title = ? WHERE id = ? AND user_id = ?",
+                        (new_title, record_id, user_id)
+                    )
+                    return cur.rowcount > 0
+            finally:
+                if not self._is_memory:
+                    conn.close()
+        return await asyncio.to_thread(_upd)
+
     async def get_due_tasks(self, current_date: str, current_time: str) -> List[Dict[str, Any]]:
         def _query():
             conn = self._get_connection()

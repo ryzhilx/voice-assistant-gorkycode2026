@@ -325,6 +325,100 @@ class DialogueOrchestrator:
                 time_part = f" в {target_time}" if target_time else ""
                 return Reply(f"Задача «{title}» успешно перенесена{date_part}{time_part}.")
 
+        if action == AIAction.COMPLETE_RECORD:
+            query = params.get("query")
+            record = None
+            if query:
+                records = await self.db.get_all_records_for_search(chat_id, "tasks")
+                if records:
+                    matches = self.search_engine.rank_records(query, records, top_k=1)
+                    if matches:
+                        record = matches[0]
+
+            if not record:
+                record = self._last_event.get(chat_id)
+                if not record or record.get("type") != "task":
+                    record = await self.db.get_latest_record(chat_id, "task")
+
+            if not record or record.get("type") != "task":
+                return Reply("Не удалось найти задачу для отметки выполненной. Уточните название задачи.")
+
+            rec_id = record["id"]
+            title = record.get("title", "Задача")
+            success = await self.db.mark_task_completed(chat_id, rec_id)
+            if success:
+                self._last_event[chat_id] = {**record, "status": "completed"}
+                return Reply(f"Задача «{title}» отмечена как выполненная! ✅")
+            return Reply(f"Не удалось обновить статус задачи «{title}».")
+
+        if action == AIAction.DELETE_RECORD:
+            target = params.get("target", "last")
+            query = params.get("query")
+            record = None
+
+            if query:
+                records = await self.db.get_all_records_for_search(chat_id, target if target in ("meeting", "task") else "all")
+                if records:
+                    matches = self.search_engine.rank_records(query, records, top_k=1)
+                    if matches:
+                        record = matches[0]
+
+            if not record:
+                record = self._last_event.get(chat_id)
+                if not record or (target in ("meeting", "task") and record.get("type") != target):
+                    record = await self.db.get_latest_record(chat_id, target)
+
+            if not record:
+                return Reply("Не удалось найти запись для удаления. Уточните название задачи или встречи.")
+
+            rec_type = record.get("type", "task")
+            rec_id = record["id"]
+            title = record.get("title", "Запись")
+
+            success = await self.db.delete_record(chat_id, rec_type, rec_id)
+            if success:
+                if self._last_event.get(chat_id, {}).get("id") == rec_id:
+                    self._last_event.pop(chat_id, None)
+                if rec_type == "meeting":
+                    return Reply(f"Встреча «{title}» успешно отменена и удалена. 🗑️")
+                return Reply(f"Задача «{title}» успешно удалена. 🗑️")
+            return Reply(f"Не удалось удалить запись «{title}».")
+
+        if action == AIAction.UPDATE_RECORD:
+            target = params.get("target", "last")
+            new_title = params.get("new_title", "").strip()
+            query = params.get("query")
+
+            if not new_title:
+                return Reply("Укажите новое название для задачи или встречи.")
+
+            record = None
+            if query:
+                records = await self.db.get_all_records_for_search(chat_id, target if target in ("meeting", "task") else "all")
+                if records:
+                    matches = self.search_engine.rank_records(query, records, top_k=1)
+                    if matches:
+                        record = matches[0]
+
+            if not record:
+                record = self._last_event.get(chat_id)
+                if not record or (target in ("meeting", "task") and record.get("type") != target):
+                    record = await self.db.get_latest_record(chat_id, target)
+
+            if not record:
+                return Reply("Не удалось найти запись для изменения. Уточните название задачи или встречи.")
+
+            rec_type = record.get("type", "task")
+            rec_id = record["id"]
+            old_title = record.get("title", "")
+
+            success = await self.db.update_record_title(chat_id, rec_type, rec_id, new_title)
+            if success:
+                self._last_event[chat_id] = {**record, "title": new_title}
+                kind = "Встреча" if rec_type == "meeting" else "Задача"
+                return Reply(f"{kind} «{old_title}» переименована в «{new_title}». ✏️")
+            return Reply(f"Не удалось обновить запись «{old_title}».")
+
         if action == AIAction.ASK_CLARIFICATION:
             prev_draft = self._pending[chat_id].draft if chat_id in self._pending else {}
             new_draft = {**prev_draft, **params.get("draft_data", {})}

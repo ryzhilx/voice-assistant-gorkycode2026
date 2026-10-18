@@ -172,6 +172,37 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(meetings), 1)
         self.assertEqual(meetings[0]["start_time"], "16:30")
 
+    async def test_delete_update_complete_records(self):
+        llm_real = LLMOrchestrator()
+        llm_real.yandex_api_key = None
+        llm_real.yandex_folder_id = None
+        orch = DialogueOrchestrator(llm=llm_real, db=self.db)
+
+        r1 = await orch.handle_text(CHAT, "Поставь задачу купить молоко")
+        self.assertIn("Задача добавлена", r1.text)
+
+        r2 = await orch.handle_text(CHAT, "Переименуй задачу в Купить миндальное молоко")
+        self.assertIn("переименована", r2.text)
+        self.assertIn("Купить миндальное молоко", r2.text)
+
+        r3 = await orch.handle_text(CHAT, "Отметь задачу выполненной")
+        self.assertIn("отмечена как выполненная", r3.text)
+
+        r4 = await orch.handle_text(CHAT, "Удали ее")
+        self.assertIn("успешно удалена", r4.text)
+
+        tasks = (await self.db.get_schedule(CHAT, "2020-01-01", "2030-01-01", filter_type="tasks"))["tasks"]
+        self.assertEqual(len(tasks), 0)
+
+        r5 = await orch.handle_text(CHAT, "Добавь встречу с дизайнером завтра в 15:00")
+        self.assertIn("Встреча", r5.text)
+
+        r6 = await orch.handle_text(CHAT, "Отмени встречу с дизайнером")
+        self.assertIn("успешно отменена", r6.text)
+
+        meetings = (await self.db.get_schedule(CHAT, "2020-01-01", "2030-01-01", filter_type="meetings"))["meetings"]
+        self.assertEqual(len(meetings), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

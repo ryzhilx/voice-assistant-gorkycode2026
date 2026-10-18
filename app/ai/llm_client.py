@@ -290,14 +290,15 @@ class LLMOrchestrator:
 
         command_verbs = (
             r"(?:напомни|поставь|добавь|назначь|запиши|создай|созвон|встреча|встречу|задачу|задача|"
-            r"покажи|что у меня|какие планы|какие встречи|какие задачи|найди|поищи|перенеси|перенести|перенесем|сдвинь|отложи|купи|купить|сделай|сделать)"
+            r"покажи|что у меня|какие планы|какие встречи|какие задачи|найди|поищи|перенеси|перенести|перенесем|сдвинь|отложи|"
+            r"удали|удалить|убери|отмени|отменить|стереть|сотри|переименуй|отметь|выполни|выполнил|сделал|закрой|заверши|купи|купить|сделай|сделать)"
         )
         pattern = rf"(?:,\s*(?:а\s+также|а\s+еще|также|потом|затем|плюс|и)\s+|,\s*(?={command_verbs}\b)|\s+и\s+(?={command_verbs}\b))"
         parts = re.split(pattern, raw, flags=re.IGNORECASE)
         clean_parts = [p.strip() for p in parts if p.strip()]
         if len(clean_parts) > 1:
             merged = []
-            tail_re = re.compile(r"^(?:найди|поищи)(?:\s+(?:ее|его|их|это|мне|пожалуйста|плиз))*\s*[.?!]*$", re.IGNORECASE)
+            tail_re = re.compile(r"^(?:найди|поищи|удали|удалить|отмени|отметь)(?:\s+(?:ее|его|их|это|мне|пожалуйста|плиз|выполненной|выполненным))*\s*[.?!]*$", re.IGNORECASE)
             for p in clean_parts:
                 if merged and tail_re.match(p):
                     merged[-1] = f"{merged[-1]}, {p}"
@@ -451,6 +452,41 @@ class LLMOrchestrator:
                     "new_date": str(parsed_date) if parsed_date else None,
                     "new_time": parsed_time
                 }
+            )
+
+        if any(w in low for w in ["отметь выполненной", "отметить выполненной", "задача выполнена", "выполнил задачу", "сделал задачу", "заверши задачу", "закрой задачу", "выполнена", "выполнено"]) or ("отметь" in low and "выполнен" in low):
+            target = "task"
+            clean = re.sub(r"\b(отметь|отметить|задачу|задачи|задача|как|выполненной|выполненным|выполнена|выполнено|выполнил|сделал|заверши|закрой|ее|его|их|мне|пожалуйста)\b|[-?.,!]", " ", low)
+            q = " ".join(clean.split()).strip()
+            return AIResponse(
+                action=AIAction.COMPLETE_RECORD,
+                params={"target": target, "query": q if q else None}
+            )
+
+        if any(w in low for w in ["удали", "удалить", "убери", "отмени", "отменить", "стереть", "сотри", "сними"]) and not any(w in low for w in ["ввод", "диалог"]):
+            target = "last"
+            if "встреч" in low or "созвон" in low:
+                target = "meeting"
+            elif "задач" in low or "напоминан" in low:
+                target = "task"
+            clean = re.sub(r"\b(удали|удалить|убери|отмени|отменить|стереть|сотри|сними|задачу|задачи|задача|встречу|встречи|встреча|созвон|напоминание|напоминания|ее|его|их|это|последнее|последнюю|мне|пожалуйста)\b|[-?.,!]", " ", low)
+            q = " ".join(clean.split()).strip()
+            return AIResponse(
+                action=AIAction.DELETE_RECORD,
+                params={"target": target, "query": q if q else None}
+            )
+
+        if any(w in low for w in ["переименуй", "измени название", "поменяй название", "измени текст", "измени задачу на", "поменяй задачу на", "измени встречу на"]):
+            target = "last"
+            if "встреч" in low or "созвон" in low:
+                target = "meeting"
+            elif "задач" in low:
+                target = "task"
+            match = re.search(r"(?:в|на|текст на|название на)\s+[\"«']?([^\"»']+)[\"»']?$", text, re.IGNORECASE)
+            new_title = match.group(1).strip() if match else text.strip()
+            return AIResponse(
+                action=AIAction.UPDATE_RECORD,
+                params={"target": target, "new_title": new_title}
             )
 
         parsed_date = self._extract_date(low)

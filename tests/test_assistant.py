@@ -52,9 +52,14 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(step2.action, AIAction.CREATE_MEETING)
         self.assertEqual(step2.params.get("start_time"), "15:00")
 
-    async def test_clarification_with_today_and_custom_time(self):
+    def _get_tz_now_date(self):
+        from zoneinfo import ZoneInfo
         import datetime
-        today_str = str(datetime.datetime.now().date())
+        tz_name = getattr(self.orchestrator, "_current_timezone", "Europe/Moscow")
+        return datetime.datetime.now(ZoneInfo(tz_name)).date()
+
+    async def test_clarification_with_today_and_custom_time(self):
+        today_str = str(self._get_tz_now_date())
         context = {
             "awaiting_slot": "time",
             "draft_data": {"title": "Встреча с Кириллом"}
@@ -65,8 +70,7 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.params.get("start_time"), "02:30")
 
     async def test_clarification_date_slot_preserves_time(self):
-        import datetime
-        today_str = str(datetime.datetime.now().date())
+        today_str = str(self._get_tz_now_date())
         context = {
             "awaiting_slot": "date",
             "draft_data": {"title": "Встреча", "start_time": "02:53"}
@@ -78,7 +82,7 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
 
     async def test_clarification_with_tomorrow_relative_date(self):
         import datetime
-        tomorrow_str = str(datetime.datetime.now().date() + datetime.timedelta(days=1))
+        tomorrow_str = str(self._get_tz_now_date() + datetime.timedelta(days=1))
         context = {
             "awaiting_slot": "time",
             "draft_data": {"title": "Встреча с Кириллом"}
@@ -89,8 +93,7 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.params.get("start_time"), "14:00")
 
     async def test_clarification_defaults_to_today_when_no_date_provided(self):
-        import datetime
-        today_str = str(datetime.datetime.now().date())
+        today_str = str(self._get_tz_now_date())
         context = {
             "awaiting_slot": "time",
             "draft_data": {"title": "Встреча с Кириллом"}

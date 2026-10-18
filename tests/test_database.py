@@ -74,6 +74,28 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
         updated_tz = await self.db.get_user_timezone(user_id=99)
         self.assertEqual(updated_tz, "Asia/Yekaterinburg")
 
+    async def test_archive_past_meetings_and_get_archive(self):
+        meeting_id = await self.db.add_meeting(
+            user_id=10,
+            title="Прошедшая встреча",
+            start_date="2026-10-18",
+            start_time="02:54"
+        )
+        await self.db.mark_meeting_reminder_sent(meeting_id)
+
+        schedule = await self.db.get_schedule(user_id=10, start_date="2026-10-18")
+        self.assertEqual(len(schedule["meetings"]), 0)
+
+        archive = await self.db.get_archive(user_id=10)
+        self.assertEqual(len(archive["meetings"]), 1)
+        self.assertEqual(archive["meetings"][0]["title"], "Прошедшая встреча")
+
+        restored = await self.db.restore_record(user_id=10, record_type="meeting", record_id=meeting_id)
+        self.assertTrue(restored)
+
+        records = await self.db.get_all_records_for_search(user_id=10, record_type="meetings")
+        self.assertEqual(records[0]["status"], "active")
+
 
 if __name__ == "__main__":
     unittest.main()

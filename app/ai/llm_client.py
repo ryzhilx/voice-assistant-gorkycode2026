@@ -260,7 +260,6 @@ class LLMOrchestrator:
             now = datetime.datetime.now()
         low = text.lower().strip()
 
-        # Chit-chat & Greetings
         if low in ["привет", "здравствуй", "добрый день", "добрый вечер", "доброе утро", "хай", "приветствую", "салют"]:
             return AIResponse(
                 action=AIAction.CHAT,
@@ -285,7 +284,21 @@ class LLMOrchestrator:
                 params={"reply": "Всегда пожалуйста! Если понадобится что-то запланировать — обращайтесь."}
             )
 
-        # Schedule
+        archive_triggers = [
+            "архив", "прошедшие", "что прошло", "старые встречи", "завершенные задачи",
+            "прошедшие события", "история встреч", "история задач"
+        ]
+        if any(w in low for w in archive_triggers) or low in ["архив", "прошедшее", "история"]:
+            filter_type = "all"
+            if "встреч" in low:
+                filter_type = "meetings"
+            elif "задач" in low:
+                filter_type = "tasks"
+            return AIResponse(
+                action=AIAction.GET_ARCHIVE,
+                params={"filter_type": filter_type}
+            )
+
         schedule_triggers = [
             "что у меня", "какие планы", "покажи встречи", "есть ли у меня",
             "какие задачи", "что запланировано", "мои встречи", "мои задачи",
@@ -319,7 +332,6 @@ class LLMOrchestrator:
                 }
             )
 
-        # Search
         if any(w in low for w in ["найди", "поищи", "когда у меня была", "когда была", "я когда-то ставил"]):
             record_type = "all"
             if "встреч" in low:
@@ -345,7 +357,6 @@ class LLMOrchestrator:
             new_dt = now + datetime.timedelta(hours=2)
             target_time = new_dt.strftime("%H:%M")
 
-        # Meetings
         if "встреч" in low or "созвон" in low:
             title = text.strip()
             for prefix in ["добавь встречу с", "поставь встречу с", "добавь встречу", "поставь встречу", "у меня встреча с", "встреча с"]:
@@ -381,7 +392,6 @@ class LLMOrchestrator:
                 }
             )
 
-        # Tasks
         is_reminder = "напомни" in low
         clean_title = re.sub(
             r"напомни мне|напомни|поставь задачу|нужно|надо|завтра|сегодня|послезавтра|до конца недели|в пятницу|в \d{1,2}(:\d{2})?(\s*утра|\s*вечера|\s*дня)?",

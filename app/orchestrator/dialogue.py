@@ -151,7 +151,7 @@ class DialogueOrchestrator:
                 else:
                     period_text = f"период с {start_date} по {end_date}"
 
-                target = "ничего не запланировано"
+                target = "нет активных встреч и задач (прошедшие события перемещены в архив)"
                 if filter_type == "meetings":
                     target = "нет запланированных встреч"
                 elif filter_type == "tasks":
@@ -184,6 +184,10 @@ class DialogueOrchestrator:
 
             return Reply("\n".join(lines))
 
+        if result.action == AIAction.GET_ARCHIVE or (result.action == AIAction.GET_SCHEDULE and result.params.get("filter_type") == "archive"):
+            text_view = await self.get_archive_view(chat_id)
+            return Reply(text_view)
+
         if result.action == AIAction.SEARCH_RECORDS:
             query = result.params.get("query", "").strip()
             record_type = result.params.get("record_type", "all")
@@ -200,9 +204,36 @@ class DialogueOrchestrator:
             for m in matches:
                 kind = "Встреча" if m.get("type") == "meeting" else "Задача"
                 date_str = f" ({m.get('date')})" if m.get("date") else ""
-                lines.append(f"- [{kind}] {m.get('title')}{date_str}")
+                archived_tag = " [Архив]" if m.get("status") == "archived" else ""
+                lines.append(f"- [{kind}]{archived_tag} {m.get('title')}{date_str}")
 
             return Reply("\n".join(lines))
 
         logger.info("Unknown action=%s params=%s", result.action.value, result.params)
         return Reply("Запрос принят, но действие не определено.")
+
+    async def get_archive_view(self, chat_id: int) -> str:
+        data = await self.db.get_archive(chat_id, limit=15)
+        meetings = data.get("meetings", [])
+        tasks = data.get("tasks", [])
+
+        if not meetings and not tasks:
+            return "📦 Архив пуст. Прошедшие встречи и завершенные задачи сохраняются здесь."
+
+        lines = ["📦 Архив событий:"]
+        if meetings:
+            lines.append("\nПрошедшие встречи:")
+            for m in meetings:
+                d = m.get("start_date") or ""
+                t = m.get("start_time") or ""
+                title = m.get("title")
+                lines.append(f"• {d} {t} — {title}")
+
+        if tasks:
+            lines.append("\nАрхивные задачи:")
+            for t in tasks:
+                status = "[x]" if t.get("status") in ("completed", "archived") else "[ ]"
+                d_str = f" ({t.get('due_date')})" if t.get("due_date") else ""
+                lines.append(f"• {status} {t.get('title')}{d_str}")
+
+        return "\n".join(lines)

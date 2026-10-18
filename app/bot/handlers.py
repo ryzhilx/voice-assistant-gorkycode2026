@@ -31,8 +31,11 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📋 Мои задачи", callback_data="nav:tasks"),
             ],
             [
-                InlineKeyboardButton(text="💡 Справка", callback_data="nav:help"),
+                InlineKeyboardButton(text="📦 Архив", callback_data="nav:archive"),
                 InlineKeyboardButton(text="🌍 Часовой пояс", callback_data="nav:tz"),
+            ],
+            [
+                InlineKeyboardButton(text="💡 Справка", callback_data="nav:help"),
             ]
         ]
     )
@@ -70,6 +73,21 @@ def get_schedule_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="📋 Активные задачи", callback_data="nav:tasks"),
+                InlineKeyboardButton(text="📦 Архив", callback_data="nav:archive"),
+            ]
+        ]
+    )
+
+
+def get_archive_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📅 На сегодня", callback_data="nav:today"),
+                InlineKeyboardButton(text="📋 Мои задачи", callback_data="nav:tasks"),
+            ],
+            [
+                InlineKeyboardButton(text="🔄 Обновить архив", callback_data="nav:archive"),
             ]
         ]
     )
@@ -128,6 +146,7 @@ async def cmd_help(message: Message):
         "⚙️ *Команды меню:*\n"
         "/today — расписание на сегодня\n"
         "/tasks — список задач\n"
+        "/archive — архив прошедших событий\n"
         "/cancel — отменить текущий ввод"
     )
     await message.answer(help_text, parse_mode="Markdown")
@@ -145,6 +164,13 @@ async def cmd_tasks(message: Message, bot: Optional[Bot] = None):
     await _send_action_safe(bot, message.chat.id, "typing")
     reply = await orchestrator.handle_text(message.chat.id, "Какие у меня активные задачи?")
     await message.answer(reply.text, reply_markup=get_schedule_keyboard())
+
+
+@router.message(Command("archive"))
+async def cmd_archive(message: Message, bot: Optional[Bot] = None):
+    await _send_action_safe(bot, message.chat.id, "typing")
+    text = await orchestrator.get_archive_view(message.chat.id)
+    await message.answer(text, reply_markup=get_archive_keyboard())
 
 
 @router.message(F.text.lower().in_(["/cancel", "отмена", "сброс"]))
@@ -178,6 +204,10 @@ async def on_navigation(callback: CallbackQuery):
         reply = await orchestrator.handle_text(chat_id, "Какие у меня задачи?")
         await callback.answer()
         await callback.message.answer(reply.text, reply_markup=get_schedule_keyboard())
+    elif action == "archive":
+        text = await orchestrator.get_archive_view(chat_id)
+        await callback.answer()
+        await callback.message.answer(text, reply_markup=get_archive_keyboard())
     elif action == "help":
         await callback.answer()
         await cmd_help(callback.message)

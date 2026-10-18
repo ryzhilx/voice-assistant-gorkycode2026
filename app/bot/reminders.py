@@ -99,6 +99,11 @@ async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetim
         finally:
             await db.mark_meeting_reminder_sent(meeting_id)
 
+    try:
+        await db.archive_past_records()
+    except Exception as e:
+        logger.warning("Failed to auto-archive past records in reminder worker: %s", e)
+
     return count
 
 

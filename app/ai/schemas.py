@@ -11,6 +11,7 @@ class AIAction(str, Enum):
     CREATE_TASK = "create_task"
     CREATE_MEETING = "create_meeting"
     GET_SCHEDULE = "get_schedule"
+    GET_ARCHIVE = "get_archive"
     SEARCH_RECORDS = "search_records"
     ASK_CLARIFICATION = "ask_clarification"
     CHAT = "chat"

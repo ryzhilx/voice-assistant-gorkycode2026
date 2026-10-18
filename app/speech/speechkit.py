@@ -27,7 +27,7 @@ class YandexSpeechKitService:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(url, headers=headers, params=params, content=audio_data)
                 if response.status_code == 200:
                     result = response.json()

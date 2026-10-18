@@ -112,6 +112,22 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
         res_week = await self.orchestrator.parse_intent("Что запланировано на эту неделю?")
         self.assertEqual(res_week.action, AIAction.GET_SCHEDULE)
 
+    async def test_get_archive(self):
+        self.orchestrator.yandex_api_key = None
+        self.orchestrator.yandex_folder_id = None
+
+        res_all = await self.orchestrator.parse_intent("Покажи архив")
+        self.assertEqual(res_all.action, AIAction.GET_ARCHIVE)
+        self.assertEqual(res_all.params.get("filter_type"), "all")
+
+        res_meetings = await self.orchestrator.parse_intent("Покажи старые встречи")
+        self.assertEqual(res_meetings.action, AIAction.GET_ARCHIVE)
+        self.assertEqual(res_meetings.params.get("filter_type"), "meetings")
+
+        res_tasks = await self.orchestrator.parse_intent("Покажи выполненные задачи")
+        self.assertEqual(res_tasks.action, AIAction.GET_ARCHIVE)
+        self.assertEqual(res_tasks.params.get("filter_type"), "tasks")
+
     async def test_search_records(self):
         res = await self.orchestrator.parse_intent("Найди задачу про презентацию")
         self.assertEqual(res.action, AIAction.SEARCH_RECORDS)
@@ -234,6 +250,18 @@ class TestSemanticSearch(unittest.IsolatedAsyncioTestCase):
         ranked2 = self.engine.rank_records("со слайдами", records, top_k=1)
         self.assertEqual(len(ranked2), 1)
         self.assertEqual(ranked2[0]["id"], 1)
+
+    def test_clean_text_for_tts(self):
+        raw = "📦 Расписание (*сегодня*):\n• [x] Купить молоко\n• [ ] Написать отчет (🔄 ежедневно) ✅"
+        cleaned = YandexSpeechKitService.clean_text_for_tts(raw)
+        self.assertNotIn("📦", cleaned)
+        self.assertNotIn("✅", cleaned)
+        self.assertNotIn("*", cleaned)
+        self.assertNotIn("[x]", cleaned)
+        self.assertNotIn("[ ]", cleaned)
+        self.assertIn("Выполнено: Купить молоко", cleaned)
+        self.assertIn("Задача: Написать отчет", cleaned)
+        self.assertIn("повторяется ежедневно", cleaned)
 
 
 @unittest.skipUnless(settings.yandex_api_key and settings.yandex_folder_id, "Yandex credentials not configured")

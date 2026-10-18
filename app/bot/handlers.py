@@ -147,6 +147,7 @@ async def cmd_help(message: Message):
         "/today — расписание на сегодня\n"
         "/tasks — список задач\n"
         "/archive — архив прошедших событий\n"
+        "/timezone — выбор часового пояса\n"
         "/cancel — отменить текущий ввод"
     )
     await message.answer(help_text, parse_mode="Markdown")

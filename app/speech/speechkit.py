@@ -1,4 +1,5 @@
 import logging
+import re
 import httpx
 from typing import Optional
 from app.config import settings
@@ -50,17 +51,34 @@ class YandexSpeechKitService:
 
         return None
 
+    @staticmethod
+    def clean_text_for_tts(text: str) -> str:
+        if not text:
+            return ""
+        t = text
+        t = re.sub(r"\[x\]", "Выполнено: ", t, flags=re.IGNORECASE)
+        t = re.sub(r"\[ \]", "Задача: ", t)
+        t = re.sub(r"\(🔄\s*([^)]+)\)", r"повторяется \1", t)
+        t = re.sub(r"[\*\_`]", "", t)
+        t = re.sub(r"^[\s•\-–—]+\s*", "", t, flags=re.MULTILINE)
+        t = re.sub(r"[\U00010000-\U0010ffff]", "", t)
+        t = re.sub(r"[\u2000-\u32ff]", "", t)
+        t = re.sub(r"[ \t]+", " ", t)
+        t = re.sub(r"\n\s*\n+", "\n", t)
+        return t.strip()
+
     async def text_to_speech(self, text: str, voice: str = "marina", emotion: str = "friendly") -> Optional[bytes]:
         if not self.api_key or not self.folder_id:
             logger.warning("SpeechKit API key not set")
             return None
 
+        clean_text = self.clean_text_for_tts(text) or text
         url = "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize"
         headers = {
             "Authorization": f"Api-Key {self.api_key}"
         }
         data = {
-            "text": text,
+            "text": clean_text,
             "lang": "ru-RU",
             "voice": voice,
             "emotion": emotion,

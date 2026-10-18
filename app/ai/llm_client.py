@@ -167,6 +167,8 @@ class LLMOrchestrator:
             return "weekly:sun"
         if re.search(r"\b(по\s+будням|в\s+будни|в\s+будние\s+дни|каждый\s+будний\s+день|по\s+будним\s+дням|с\s+понедельника\s+по\s+пятницу)\b", low):
             return "weekdays"
+        if re.search(r"\b(по\s+выходным|в\s+выходные|на\s+выходных|каждые\s+выходные)\b", low):
+            return "weekends"
         if re.search(r"\b(каждый\s+день|ежедневно|каждое\s+утро|каждый\s+вечер|по\s+дням)\b", low):
             return "daily"
         if re.search(r"\b(каждую\s+неделю|еженедельно|раз\s+в\s+неделю)\b", low):
@@ -195,11 +197,17 @@ class LLMOrchestrator:
                 pass
 
         if recurrence == "daily":
-            return today
+            return today + datetime.timedelta(days=1) if time_passed else today
 
         if recurrence == "weekdays":
-            cand = today
+            cand = today + datetime.timedelta(days=1) if time_passed else today
             while cand.weekday() >= 5:
+                cand = cand + datetime.timedelta(days=1)
+            return cand
+
+        if recurrence == "weekends":
+            cand = today + datetime.timedelta(days=1) if time_passed else today
+            while cand.weekday() < 5:
                 cand = cand + datetime.timedelta(days=1)
             return cand
 
@@ -208,12 +216,23 @@ class LLMOrchestrator:
             day_map = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
             target_wd = day_map.get(day_code, 0)
             days_ahead = (target_wd - today.weekday()) % 7
+            if days_ahead == 0 and time_passed:
+                days_ahead = 7
             return today + datetime.timedelta(days=days_ahead)
 
         if recurrence == "weekly":
-            return today
+            return today + datetime.timedelta(days=7) if time_passed else today
 
         if recurrence == "monthly":
+            if time_passed:
+                import calendar
+                y = today.year
+                m = today.month + 1
+                if m > 12:
+                    m = 1
+                    y += 1
+                max_d = calendar.monthrange(y, m)[1]
+                return datetime.date(y, m, min(today.day, max_d))
             return today
 
         return today
@@ -362,6 +381,22 @@ class LLMOrchestrator:
                             if rec:
                                 params["recurrence"] = rec
 
+                        rec_val = params.get("recurrence")
+                        if rec_val:
+                            date_key = "start_date" if action_val == AIAction.CREATE_MEETING.value else "due_date"
+                            time_val = params.get(time_key)
+                            target_init_date = self._initial_recurring_date(rec_val, time_val)
+                            if not params.get(date_key):
+                                params[date_key] = str(target_init_date)
+                            else:
+                                try:
+                                    from zoneinfo import ZoneInfo
+                                    now_today = datetime.datetime.now(ZoneInfo(self._current_timezone)).date()
+                                except Exception:
+                                    now_today = datetime.datetime.now().date()
+                                if params.get(date_key) == str(now_today) and target_init_date > now_today:
+                                    params[date_key] = str(target_init_date)
+
                     return AIResponse(
                         action=AIAction(action_val),
                         params=params
@@ -453,14 +488,17 @@ class LLMOrchestrator:
             )
 
         archive_triggers = [
-            "архив", "прошедшие", "что прошло", "старые встречи", "завершенные задачи",
-            "прошедшие события", "история встреч", "история задач"
+            "архив", "прошедшие", "прошедших", "прошедшее", "что прошло",
+            "старые встречи", "старых встреч", "старые задачи", "старых задач",
+            "завершенные задачи", "завершенных задач", "завершенные дела", "завершенных дел",
+            "выполненные задачи", "выполненных задач", "выполненные дела", "выполненных дел",
+            "прошедшие события", "прошедших событий", "история встреч", "история задач", "история событий"
         ]
-        if any(w in low for w in archive_triggers) or low in ["архив", "прошедшее", "история"]:
+        if any(w in low for w in archive_triggers) or low in ["архив", "прошедшее", "история", "старое"]:
             filter_type = "all"
-            if "встреч" in low:
+            if any(w in low for w in ["встреч", "митинг"]):
                 filter_type = "meetings"
-            elif "задач" in low:
+            elif any(w in low for w in ["задач", "дел", "напомина"]):
                 filter_type = "tasks"
             return AIResponse(
                 action=AIAction.GET_ARCHIVE,
@@ -602,6 +640,7 @@ class LLMOrchestrator:
             r"по\s+пятницам|каждую\s+пятницу|по\s+субботам|каждую\s+субботу|"
             r"по\s+воскресеньям|каждое\s+воскресенье|по\s+будням|в\s+будни|в\s+будние\s+дни|"
             r"каждый\s+будний\s+день|по\s+будним\s+дням|с\s+понедельника\s+по\s+пятницу|"
+            r"по\s+выходным|в\s+выходные|на\s+выходных|каждые\s+выходные|"
             r"каждый\s+день|ежедневно|каждое\s+утро|каждый\s+вечер|каждую\s+неделю|еженедельно|каждый\s+месяц|ежемесячно)\b"
         )
 

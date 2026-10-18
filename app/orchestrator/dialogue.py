@@ -102,6 +102,7 @@ class DialogueOrchestrator:
         mapping = {
             "daily": "ежедневно",
             "weekdays": "по будням",
+            "weekends": "по выходным",
             "weekly": "еженедельно",
             "weekly:mon": "каждый понедельник",
             "weekly:tue": "каждый вторник",
@@ -166,7 +167,7 @@ class DialogueOrchestrator:
             participants = params.get("participants")
             recurrence = params.get("recurrence")
 
-            conflict = await self.db.check_meeting_conflict(chat_id, start_date, start_time)
+            conflict = await self.db.check_meeting_conflict(chat_id, start_date, start_time, recurrence=recurrence)
             meeting_id = await self.db.add_meeting(
                 user_id=chat_id,
                 title=title,
@@ -254,7 +255,10 @@ class DialogueOrchestrator:
             return Reply("\n".join(lines))
 
         if action == AIAction.GET_ARCHIVE or (action == AIAction.GET_SCHEDULE and params.get("filter_type") == "archive"):
-            text_view = await self.get_archive_view(chat_id)
+            f_type = params.get("filter_type", "all")
+            if f_type == "archive":
+                f_type = "all"
+            text_view = await self.get_archive_view(chat_id, filter_type=f_type)
             return Reply(text_view)
 
         if action == AIAction.SEARCH_RECORDS:
@@ -326,7 +330,8 @@ class DialogueOrchestrator:
                     )
                     return Reply("Уточните дату и время переноса.")
 
-                conflict = await self.db.check_meeting_conflict(chat_id, target_date, target_time, exclude_id=rec_id)
+                rec_val = record.get("recurrence")
+                conflict = await self.db.check_meeting_conflict(chat_id, target_date, target_time, exclude_id=rec_id, recurrence=rec_val)
                 await self.db.update_meeting_time(chat_id, rec_id, target_date, target_time)
 
                 self._last_event[chat_id] = {
@@ -384,7 +389,8 @@ class DialogueOrchestrator:
             success = await self.db.mark_task_completed(chat_id, rec_id)
             if success:
                 if recurrence:
-                    next_d = Database.calculate_next_occurrence(record.get("date") or datetime.date.today().isoformat(), recurrence)
+                    today_str = datetime.date.today().isoformat()
+                    next_d = Database.calculate_next_occurrence(record.get("date") or today_str, recurrence, from_date=today_str)
                     self._last_event[chat_id] = {**record, "date": next_d, "status": "pending"}
                     return Reply(f"Задача «{title}» выполнена! Следующее повторение запланировано на {next_d}. ✅")
                 self._last_event[chat_id] = {**record, "status": "completed"}
@@ -471,17 +477,30 @@ class DialogueOrchestrator:
         logger.info("Unknown action=%s params=%s", action.value, params)
         return Reply("Запрос принят, но действие не определено.")
 
-    async def get_archive_view(self, chat_id: int) -> str:
-        data = await self.db.get_archive(chat_id, limit=15)
+    async def get_archive_view(self, chat_id: int, filter_type: str = "all") -> str:
+        if filter_type not in ("all", "meetings", "tasks"):
+            filter_type = "all"
+        data = await self.db.get_archive(chat_id, filter_type=filter_type, limit=15)
         meetings = data.get("meetings", [])
         tasks = data.get("tasks", [])
 
         if not meetings and not tasks:
+            if filter_type == "meetings":
+                return "📦 В архиве нет прошедших встреч."
+            if filter_type == "tasks":
+                return "📦 В архиве нет завершенных задач."
             return "📦 Архив пуст. Прошедшие встречи и завершенные задачи сохраняются здесь."
 
-        lines = ["📦 Архив событий:"]
+        header = "📦 Архив событий:"
+        if filter_type == "meetings":
+            header = "📦 Архив встреч:"
+        elif filter_type == "tasks":
+            header = "📦 Архив задач:"
+
+        lines = [header]
         if meetings:
-            lines.append("\nПрошедшие встречи:")
+            if filter_type == "all":
+                lines.append("\nПрошедшие встречи:")
             for m in meetings:
                 d = m.get("start_date") or ""
                 t = m.get("start_time") or ""
@@ -489,7 +508,8 @@ class DialogueOrchestrator:
                 lines.append(f"• {d} {t} — {title}")
 
         if tasks:
-            lines.append("\nАрхивные задачи:")
+            if filter_type == "all":
+                lines.append("\nАрхивные задачи:")
             for t in tasks:
                 status = "[x]" if t.get("status") in ("completed", "archived") else "[ ]"
                 d_str = f" ({t.get('due_date')})" if t.get("due_date") else ""

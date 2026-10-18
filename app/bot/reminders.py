@@ -69,7 +69,8 @@ async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetim
             logger.warning("Failed to send task reminder %s to %s: %s", task_id, user_id, e)
         finally:
             if recurrence:
-                next_date = Database.calculate_next_occurrence(task["due_date"], recurrence, from_date=current_date)
+                from_d = u_date if now is None else current_date
+                next_date = Database.calculate_next_occurrence(task["due_date"], recurrence, from_date=from_d)
                 await db.advance_recurring_task(task_id, next_date)
             else:
                 await db.mark_task_reminder_sent(task_id)
@@ -106,7 +107,8 @@ async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetim
             logger.warning("Failed to send meeting reminder %s to %s: %s", meeting_id, user_id, e)
         finally:
             if recurrence:
-                next_date = Database.calculate_next_occurrence(meeting["start_date"], recurrence, from_date=current_date)
+                from_d = u_date if now is None else current_date
+                next_date = Database.calculate_next_occurrence(meeting["start_date"], recurrence, from_date=from_d)
                 await db.advance_recurring_meeting(meeting_id, next_date)
             else:
                 await db.mark_meeting_reminder_sent(meeting_id)

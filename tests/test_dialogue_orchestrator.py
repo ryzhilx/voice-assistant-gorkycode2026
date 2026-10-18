@@ -205,6 +205,34 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(meetings), 0)
         await orch.aclose()
 
+    async def test_archive_view_and_filtering(self):
+        empty_all = await self.orch.get_archive_view(CHAT)
+        self.assertIn("Архив пуст", empty_all)
+
+        empty_m = await self.orch.get_archive_view(CHAT, filter_type="meetings")
+        self.assertIn("нет прошедших встреч", empty_m)
+
+        empty_t = await self.orch.get_archive_view(CHAT, filter_type="tasks")
+        self.assertIn("нет завершенных задач", empty_t)
+
+        m_id = await self.db.add_meeting(CHAT, "Ретроспектива", "2026-10-10", "12:00")
+        await self.db.archive_record(CHAT, "meeting", m_id)
+
+        t_id = await self.db.add_task(CHAT, "Подготовить отчет", "2026-10-10", "18:00")
+        await self.db.mark_task_completed(CHAT, t_id)
+
+        view_all = await self.orch.get_archive_view(CHAT)
+        self.assertIn("Ретроспектива", view_all)
+        self.assertIn("Подготовить отчет", view_all)
+
+        view_meetings = await self.orch.get_archive_view(CHAT, filter_type="meetings")
+        self.assertIn("Ретроспектива", view_meetings)
+        self.assertNotIn("Подготовить отчет", view_meetings)
+
+        view_tasks = await self.orch.get_archive_view(CHAT, filter_type="tasks")
+        self.assertIn("Подготовить отчет", view_tasks)
+        self.assertNotIn("Ретроспектива", view_tasks)
+
 
 if __name__ == "__main__":
     unittest.main()

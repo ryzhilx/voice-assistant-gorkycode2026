@@ -78,6 +78,13 @@ class LLMOrchestrator:
         except Exception:
             now = datetime.datetime.now()
 
+        iso_m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
+        if iso_m:
+            try:
+                return datetime.date.fromisoformat(iso_m.group(1))
+            except Exception:
+                pass
+
         try:
             import dateparser
             dt = dateparser.parse(
@@ -107,11 +114,12 @@ class LLMOrchestrator:
     @staticmethod
     def _parse_time(text: str) -> Optional[str]:
         low = text.lower().strip()
-        time_match = re.search(
-            r"(?:в\s*)?(\d{1,2})[:.-](\d{2})(?:\s*(утра|дня|вечера))?|в\s*(\d{1,2})(?:\s*(утра|дня|вечера))?|(\d{1,2})\s*(утра|дня|вечера)",
-            low
+        clean = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", low)
+        matches = re.finditer(
+            r"(?:в\s*)?([01]?\d|2[0-3])[:.-]([0-5]\d)(?:\s*(утра|дня|вечера))?|в\s*(\d{1,2})(?:\s*(утра|дня|вечера))?|(\d{1,2})\s*(утра|дня|вечера)",
+            clean
         )
-        if time_match:
+        for time_match in matches:
             if time_match.group(1) and time_match.group(2):
                 h = int(time_match.group(1))
                 m = int(time_match.group(2))
@@ -134,8 +142,8 @@ class LLMOrchestrator:
                     h += 12
                 if 0 <= h <= 23:
                     return f"{h:02d}:00"
-        elif re.match(r"^\s*(\d{1,2})\s*$", low):
-            h = int(low.strip())
+        if re.match(r"^\s*(\d{1,2})\s*$", clean):
+            h = int(clean.strip())
             if 0 <= h <= 23:
                 return f"{h:02d}:00"
         return None

@@ -13,6 +13,7 @@ class AIAction(str, Enum):
     GET_SCHEDULE = "get_schedule"
     GET_ARCHIVE = "get_archive"
     SEARCH_RECORDS = "search_records"
+    RESCHEDULE_RECORD = "reschedule_record"
     ASK_CLARIFICATION = "ask_clarification"
     CHAT = "chat"
     MULTI_ACTION = "multi_action"

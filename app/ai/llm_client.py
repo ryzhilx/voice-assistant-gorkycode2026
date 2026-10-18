@@ -142,10 +142,19 @@ class LLMOrchestrator:
         date_found = self._extract_date(answer_text)
         if date_found:
             draft["start_date"] = str(date_found)
+            draft["new_date"] = str(date_found)
 
         time_found = self._parse_time(answer_text)
         if time_found:
             draft["start_time"] = time_found
+            draft["new_time"] = time_found
+
+        if draft.get("action") == "reschedule_record":
+            if draft.get("new_date") or draft.get("new_time"):
+                return AIResponse(
+                    action=AIAction.RESCHEDULE_RECORD,
+                    params=draft
+                )
 
         if missing_slot == "title" and not draft.get("title"):
             draft["title"] = answer_text.strip().capitalize()
@@ -281,7 +290,7 @@ class LLMOrchestrator:
 
         command_verbs = (
             r"(?:напомни|поставь|добавь|назначь|запиши|создай|созвон|встреча|встречу|задачу|задача|"
-            r"покажи|что у меня|какие планы|какие встречи|какие задачи|найди|поищи|купи|купить|сделай|сделать)"
+            r"покажи|что у меня|какие планы|какие встречи|какие задачи|найди|поищи|перенеси|перенести|перенесем|сдвинь|отложи|купи|купить|сделай|сделать)"
         )
         pattern = rf"(?:,\s*(?:а\s+также|а\s+еще|также|потом|затем|плюс|и)\s+|,\s*(?={command_verbs}\b)|\s+и\s+(?={command_verbs}\b))"
         parts = re.split(pattern, raw, flags=re.IGNORECASE)
@@ -409,6 +418,38 @@ class LLMOrchestrator:
                 params={
                     "query": query if query else text,
                     "record_type": record_type
+                }
+            )
+
+        if any(w in low for w in ["перенеси", "перенесем", "перенести", "сдвинь", "отложи"]):
+            target = "last"
+            if "встреч" in low:
+                target = "meeting"
+            elif "задач" in low:
+                target = "task"
+
+            parsed_date = self._extract_date(low)
+            parsed_time = self._parse_time(low)
+            if not parsed_time and "через два часа" in low:
+                new_dt = now + datetime.timedelta(hours=2)
+                parsed_time = new_dt.strftime("%H:%M")
+
+            if not parsed_date and not parsed_time:
+                return AIResponse(
+                    action=AIAction.ASK_CLARIFICATION,
+                    params={
+                        "missing_slot": "time",
+                        "question": "На какую дату или время перенести?",
+                        "draft_data": {"action": "reschedule_record", "target": target}
+                    }
+                )
+
+            return AIResponse(
+                action=AIAction.RESCHEDULE_RECORD,
+                params={
+                    "target": target,
+                    "new_date": str(parsed_date) if parsed_date else None,
+                    "new_time": parsed_time
                 }
             )
 

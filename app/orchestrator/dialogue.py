@@ -34,6 +34,7 @@ class DialogueOrchestrator:
         self.search_engine = search_engine or SemanticSearchEngine()
         self._pending: Dict[int, PendingClarification] = {}
         self._history: Dict[int, List[Dict[str, str]]] = {}
+        self._last_event: Dict[int, Dict[str, Any]] = {}
 
     def has_pending(self, chat_id: int) -> bool:
         return chat_id in self._pending
@@ -105,13 +106,21 @@ class DialogueOrchestrator:
             due_time = params.get("due_time")
             is_reminder = bool(params.get("is_reminder", False))
 
-            await self.db.add_task(
+            task_id = await self.db.add_task(
                 user_id=chat_id,
                 title=title,
                 due_date=due_date,
                 due_time=due_time,
                 is_reminder=is_reminder
             )
+            self._last_event[chat_id] = {
+                "id": task_id,
+                "title": title,
+                "date": due_date,
+                "time": due_time,
+                "type": "task",
+                "is_reminder": is_reminder
+            }
 
             date_info = f" на {due_date}" if due_date else ""
             time_info = f" в {due_time}" if due_time else ""
@@ -128,7 +137,7 @@ class DialogueOrchestrator:
             participants = params.get("participants")
 
             conflict = await self.db.check_meeting_conflict(chat_id, start_date, start_time)
-            await self.db.add_meeting(
+            meeting_id = await self.db.add_meeting(
                 user_id=chat_id,
                 title=title,
                 start_date=start_date,
@@ -136,6 +145,13 @@ class DialogueOrchestrator:
                 duration_minutes=duration,
                 participants=participants
             )
+            self._last_event[chat_id] = {
+                "id": meeting_id,
+                "title": title,
+                "date": start_date,
+                "time": start_time,
+                "type": "meeting"
+            }
 
             if title.strip().lower() in ["встреча", "созвон", "meeting"]:
                 response_text = f"Встреча назначена на {start_date} в {start_time}."
@@ -225,7 +241,89 @@ class DialogueOrchestrator:
                 archived_tag = " [Архив]" if m.get("status") == "archived" else ""
                 lines.append(f"- [{kind}]{archived_tag} {m.get('title')}{date_str}")
 
+            if matches:
+                top_m = matches[0]
+                self._last_event[chat_id] = {
+                    "id": top_m.get("id"),
+                    "title": top_m.get("title"),
+                    "date": top_m.get("date"),
+                    "time": top_m.get("time"),
+                    "type": top_m.get("type")
+                }
+
             return Reply("\n".join(lines))
+
+        if action == AIAction.RESCHEDULE_RECORD:
+            target = params.get("target", "last")
+            new_date = params.get("new_date")
+            new_time = params.get("new_time")
+
+            if not new_date and not new_time:
+                self._pending[chat_id] = PendingClarification(
+                    slot="time",
+                    draft={"action": "reschedule_record", "target": target}
+                )
+                return Reply("На какую дату или время перенести?")
+
+            record = self._last_event.get(chat_id)
+            if not record or (target in ("meeting", "task") and record.get("type") != target):
+                db_record = await self.db.get_latest_record(chat_id, target)
+                if db_record:
+                    record = db_record
+
+            if not record:
+                return Reply("Не удалось найти предыдущую запись для переноса. Уточните, какую именно встречу или задачу вы хотите перенести.")
+
+            rec_type = record.get("type", "meeting")
+            title = record.get("title", "Запись")
+            rec_id = record.get("id")
+
+            if rec_type == "meeting":
+                cur_date = record.get("date") or record.get("start_date")
+                cur_time = record.get("time") or record.get("start_time")
+                target_date = new_date or cur_date
+                target_time = new_time or cur_time
+
+                if not target_date or not target_time:
+                    self._pending[chat_id] = PendingClarification(
+                        slot="time" if not target_time else "date",
+                        draft={"action": "reschedule_record", "target": "meeting", "new_date": target_date, "new_time": target_time}
+                    )
+                    return Reply("Уточните дату и время переноса.")
+
+                conflict = await self.db.check_meeting_conflict(chat_id, target_date, target_time, exclude_id=rec_id)
+                await self.db.update_meeting_time(chat_id, rec_id, target_date, target_time)
+
+                self._last_event[chat_id] = {
+                    "id": rec_id,
+                    "title": title,
+                    "date": target_date,
+                    "time": target_time,
+                    "type": "meeting"
+                }
+
+                conflict_note = f"\nВнимание: в это же время уже стоит «{conflict.get('title')}»." if conflict else ""
+                return Reply(f"Встреча «{title}» успешно перенесена на {target_date} в {target_time}.{conflict_note}")
+
+            else:
+                cur_date = record.get("date") or record.get("due_date")
+                cur_time = record.get("time") or record.get("due_time")
+                target_date = new_date or cur_date
+                target_time = new_time or cur_time
+
+                await self.db.update_task_time(chat_id, rec_id, target_date, target_time)
+
+                self._last_event[chat_id] = {
+                    "id": rec_id,
+                    "title": title,
+                    "date": target_date,
+                    "time": target_time,
+                    "type": "task"
+                }
+
+                date_part = f" на {target_date}" if target_date else ""
+                time_part = f" в {target_time}" if target_time else ""
+                return Reply(f"Задача «{title}» успешно перенесена{date_part}{time_part}.")
 
         if action == AIAction.ASK_CLARIFICATION:
             prev_draft = self._pending[chat_id].draft if chat_id in self._pending else {}

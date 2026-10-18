@@ -138,19 +138,27 @@ class Database:
                     conn.close()
         return await asyncio.to_thread(_insert)
 
-    async def check_meeting_conflict(self, user_id: int, start_date: str, start_time: str) -> Optional[Dict[str, Any]]:
+    async def check_meeting_conflict(
+        self,
+        user_id: int,
+        start_date: str,
+        start_time: str,
+        exclude_id: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
         def _check():
             conn = self._get_connection()
             try:
-                row = conn.execute(
-                    """
+                query = """
                     SELECT id, title, start_date, start_time
                     FROM meetings
                     WHERE user_id = ? AND start_date = ? AND start_time = ?
-                    LIMIT 1
-                    """,
-                    (user_id, start_date, start_time)
-                ).fetchone()
+                """
+                params = [user_id, start_date, start_time]
+                if exclude_id is not None:
+                    query += " AND id != ?"
+                    params.append(exclude_id)
+                query += " LIMIT 1"
+                row = conn.execute(query, tuple(params)).fetchone()
                 return dict(row) if row else None
             finally:
                 if not self._is_memory:
@@ -424,6 +432,125 @@ class Database:
                 if not self._is_memory:
                     conn.close()
         return await asyncio.to_thread(_update)
+
+    async def update_meeting_time(
+        self,
+        user_id: int,
+        meeting_id: int,
+        start_date: str,
+        start_time: str
+    ) -> bool:
+        def _update():
+            conn = self._get_connection()
+            try:
+                with conn:
+                    cur = conn.execute(
+                        """
+                        UPDATE meetings
+                        SET start_date = ?, start_time = ?, reminder_sent = 0, status = 'active'
+                        WHERE id = ? AND user_id = ?
+                        """,
+                        (start_date, start_time, meeting_id, user_id)
+                    )
+                    return cur.rowcount > 0
+            finally:
+                if not self._is_memory:
+                    conn.close()
+        return await asyncio.to_thread(_update)
+
+    async def update_task_time(
+        self,
+        user_id: int,
+        task_id: int,
+        due_date: Optional[str] = None,
+        due_time: Optional[str] = None
+    ) -> bool:
+        def _update():
+            conn = self._get_connection()
+            try:
+                with conn:
+                    cur = conn.execute(
+                        """
+                        UPDATE tasks
+                        SET due_date = COALESCE(?, due_date),
+                            due_time = COALESCE(?, due_time),
+                            reminder_sent = 0,
+                            status = 'pending'
+                        WHERE id = ? AND user_id = ?
+                        """,
+                        (due_date, due_time, task_id, user_id)
+                    )
+                    return cur.rowcount > 0
+            finally:
+                if not self._is_memory:
+                    conn.close()
+        return await asyncio.to_thread(_update)
+
+    async def get_latest_record(self, user_id: int, record_type: str = "last") -> Optional[Dict[str, Any]]:
+        def _get():
+            conn = self._get_connection()
+            try:
+                if record_type in ("meeting", "meetings"):
+                    row = conn.execute(
+                        """
+                        SELECT id, title, start_date as date, start_time as time, status, 'meeting' as type
+                        FROM meetings
+                        WHERE user_id = ?
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (user_id,)
+                    ).fetchone()
+                    return dict(row) if row else None
+
+                if record_type in ("task", "tasks"):
+                    row = conn.execute(
+                        """
+                        SELECT id, title, due_date as date, due_time as time, status, 'task' as type
+                        FROM tasks
+                        WHERE user_id = ?
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (user_id,)
+                    ).fetchone()
+                    return dict(row) if row else None
+
+                m_row = conn.execute(
+                    """
+                    SELECT id, title, start_date as date, start_time as time, status, 'meeting' as type, created_at
+                    FROM meetings
+                    WHERE user_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (user_id,)
+                ).fetchone()
+
+                t_row = conn.execute(
+                    """
+                    SELECT id, title, due_date as date, due_time as time, status, 'task' as type, created_at
+                    FROM tasks
+                    WHERE user_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (user_id,)
+                ).fetchone()
+
+                if m_row and t_row:
+                    if str(m_row["created_at"]) >= str(t_row["created_at"]):
+                        return dict(m_row)
+                    return dict(t_row)
+                if m_row:
+                    return dict(m_row)
+                if t_row:
+                    return dict(t_row)
+                return None
+            finally:
+                if not self._is_memory:
+                    conn.close()
+        return await asyncio.to_thread(_get)
 
     async def get_due_tasks(self, current_date: str, current_time: str) -> List[Dict[str, Any]]:
         def _query():

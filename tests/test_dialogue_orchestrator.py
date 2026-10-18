@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock
 
 from app.ai.schemas import AIAction, AIResponse
+from app.ai.llm_client import LLMOrchestrator
 from app.orchestrator.dialogue import DEFAULT_QUESTION, DialogueOrchestrator
 from app.storage.db import Database
 
@@ -148,6 +149,28 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         sched = await self.db.get_schedule(CHAT, "2026-10-18", "2026-10-19")
         self.assertEqual(len(sched["meetings"]), 1)
         self.assertEqual(len(sched["tasks"]), 1)
+
+    async def test_reschedule_dialogue_context(self):
+        llm_real = LLMOrchestrator()
+        llm_real.yandex_api_key = None
+        llm_real.yandex_folder_id = None
+        orch = DialogueOrchestrator(llm=llm_real, db=self.db)
+
+        r1 = await orch.handle_text(CHAT, "Добавь встречу с Михаилом завтра в 14:00")
+        self.assertIn("Встреча", r1.text)
+        self.assertIn("14:00", r1.text)
+
+        r2 = await orch.handle_text(CHAT, "А перенеси ее на послезавтра")
+        self.assertIn("перенесена", r2.text)
+        self.assertIn("14:00", r2.text)
+
+        r3 = await orch.handle_text(CHAT, "Перенеси ее на 16:30")
+        self.assertIn("перенесена", r3.text)
+        self.assertIn("16:30", r3.text)
+
+        meetings = (await self.db.get_schedule(CHAT, "2020-01-01", "2030-01-01", filter_type="meetings"))["meetings"]
+        self.assertEqual(len(meetings), 1)
+        self.assertEqual(meetings[0]["start_time"], "16:30")
 
 
 if __name__ == "__main__":

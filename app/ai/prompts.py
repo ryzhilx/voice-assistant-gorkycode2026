@@ -56,6 +56,12 @@ SYSTEM_PROMPT_TEMPLATE = """Ты — интеллектуальное ядро �
    - sub_actions: массив вложенных объектов действий (каждый со своими action и params). Пример:
      {{"action": "multi_action", "params": {{}}, "sub_actions": [{{"action": "create_meeting", "params": {{"title": "Встреча с Михаилом", "start_date": "2026-10-19", "start_time": "14:00"}}}}, {{"action": "create_task", "params": {{"title": "Купить кофе", "due_time": "18:00", "is_reminder": true}}}}]}}
 
+9. "reschedule_record" — Перенос или изменение времени/даты ранее созданной или найденной встречи или задачи (контекст диалога, например: "А перенеси ее на завтра", "Перенеси встречу на 15:00", "Сдвинь на послезавтра", "Перенеси задачу на пятницу", "А перенеси на 16:30"):
+   Параметры:
+   - target: "meeting" | "task" | "last" (по умолчанию "last", если сказано "ее", "его", "это")
+   - new_date: новая дата YYYY-MM-DD (если указана)
+   - new_time: новое время HH:MM (если указано)
+
 ПРАВИЛА ОБРАБОТКИ ОТНОСИТЕЛЬНЫХ ДАТ:
 - "сегодня" = дата из {current_datetime}
 - "завтра" = следующий день
@@ -223,6 +229,37 @@ FEW_SHOT_EXAMPLES = [
             "params": {
                 "query": "договор",
                 "record_type": "tasks"
+            }
+        }
+    },
+    {
+        "input": "А перенеси ее на завтра",
+        "output": {
+            "action": "reschedule_record",
+            "params": {
+                "target": "last",
+                "new_date": "2026-10-19"
+            }
+        }
+    },
+    {
+        "input": "Перенеси ее на 16:00",
+        "output": {
+            "action": "reschedule_record",
+            "params": {
+                "target": "last",
+                "new_time": "16:00"
+            }
+        }
+    },
+    {
+        "input": "Перенеси встречу на пятницу в 15:00",
+        "output": {
+            "action": "reschedule_record",
+            "params": {
+                "target": "meeting",
+                "new_date": "2026-10-23",
+                "new_time": "15:00"
             }
         }
     },

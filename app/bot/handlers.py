@@ -31,7 +31,31 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📋 Мои задачи", callback_data="nav:tasks"),
             ],
             [
-                InlineKeyboardButton(text="💡 Справка и примеры", callback_data="nav:help"),
+                InlineKeyboardButton(text="💡 Справка", callback_data="nav:help"),
+                InlineKeyboardButton(text="🌍 Часовой пояс", callback_data="nav:tz"),
+            ]
+        ]
+    )
+
+
+def get_timezone_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Калининград (UTC+2)", callback_data="set_tz:Europe/Kaliningrad"),
+                InlineKeyboardButton(text="Москва (UTC+3)", callback_data="set_tz:Europe/Moscow"),
+            ],
+            [
+                InlineKeyboardButton(text="Самара (UTC+4)", callback_data="set_tz:Europe/Samara"),
+                InlineKeyboardButton(text="Екатеринбург (UTC+5)", callback_data="set_tz:Asia/Yekaterinburg"),
+            ],
+            [
+                InlineKeyboardButton(text="Омск (UTC+6)", callback_data="set_tz:Asia/Omsk"),
+                InlineKeyboardButton(text="Новосибирск (UTC+7)", callback_data="set_tz:Asia/Novosibirsk"),
+            ],
+            [
+                InlineKeyboardButton(text="Иркутск (UTC+8)", callback_data="set_tz:Asia/Irkutsk"),
+                InlineKeyboardButton(text="Владивосток (UTC+10)", callback_data="set_tz:Asia/Vladivostok"),
             ]
         ]
     )
@@ -157,6 +181,30 @@ async def on_navigation(callback: CallbackQuery):
     elif action == "help":
         await callback.answer()
         await cmd_help(callback.message)
+    elif action == "tz":
+        await callback.answer()
+        await cmd_timezone(callback.message)
+
+
+@router.message(Command("timezone", "tz"))
+async def cmd_timezone(message: Message):
+    current_tz = await orchestrator.db.get_user_timezone(message.chat.id)
+    text = (
+        f"🌍 *Настройка часового пояса*\n\n"
+        f"Ваш текущий пояс: `{current_tz}`\n\n"
+        f"Выберите регион из списка ниже:"
+    )
+    await message.answer(text, parse_mode="Markdown", reply_markup=get_timezone_keyboard())
+
+
+@router.callback_query(F.data.startswith("set_tz:"))
+async def on_set_timezone(callback: CallbackQuery):
+    tz = callback.data.split(":", 1)[1]
+    username = callback.from_user.username if callback.from_user else None
+    await orchestrator.db.set_user_timezone(callback.from_user.id, tz, username)
+    await callback.answer("Часовой пояс обновлен!")
+    if callback.message:
+        await callback.message.edit_text(f"✅ Часовой пояс успешно изменен на `{tz}`.", parse_mode="Markdown")
 
 
 @router.callback_query(F.data.startswith("task_done:"))

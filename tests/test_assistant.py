@@ -114,6 +114,17 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.action, AIAction.SEARCH_RECORDS)
         self.assertIn("презентаци", res.params.get("query", ""))
 
+    def test_system_prompt_includes_timezone_and_calendar(self):
+        from app.ai.prompts import get_system_prompt
+        prompt_default = get_system_prompt()
+        self.assertIn("Europe/Moscow", prompt_default)
+        self.assertIn("КАЛЕНДАРНЫЙ КОНТЕКСТ", prompt_default)
+        self.assertIn("Текущая неделя", prompt_default)
+        self.assertIn("Следующая неделя", prompt_default)
+
+        prompt_custom = get_system_prompt("Asia/Yekaterinburg")
+        self.assertIn("Asia/Yekaterinburg", prompt_custom)
+
 
 class TestSemanticSearch(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

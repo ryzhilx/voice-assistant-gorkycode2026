@@ -20,6 +20,7 @@ async def main():
             BotCommand(command="start", description="Главное меню и старт"),
             BotCommand(command="today", description="Расписание на сегодня"),
             BotCommand(command="tasks", description="Список активных задач"),
+            BotCommand(command="timezone", description="Настройка часового пояса"),
             BotCommand(command="help", description="Примеры команд и справка"),
             BotCommand(command="cancel", description="Отменить текущий шаг"),
         ])

@@ -66,5 +66,14 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
         types = {r["type"] for r in records}
         self.assertEqual(types, {"task", "meeting"})
 
+    async def test_user_timezone_default_and_set(self):
+        default_tz = await self.db.get_user_timezone(user_id=99)
+        self.assertEqual(default_tz, "Europe/Moscow")
+
+        await self.db.set_user_timezone(user_id=99, timezone="Asia/Yekaterinburg", username="testuser")
+        updated_tz = await self.db.get_user_timezone(user_id=99)
+        self.assertEqual(updated_tz, "Asia/Yekaterinburg")
+
+
 if __name__ == "__main__":
     unittest.main()

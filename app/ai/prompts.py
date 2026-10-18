@@ -2,7 +2,9 @@ import datetime
 from typing import Dict, Any
 
 SYSTEM_PROMPT_TEMPLATE = """Ты — интеллектуальное ядро голосового ассистента для управления личными задачами, напоминаниями и встречами на русском языке.
-Текущее точное время и день недели: {current_datetime} (Часовой пояс: Europe/Moscow).
+Текущее точное время и день недели: {current_datetime} (Часовой пояс: {timezone}).
+
+{calendar_context}
 
 Твоя задача — проанализировать запрос пользователя (полученный текстом или через распознавание речи) и вернуть строго один JSON-объект с выбором действия и извлеченными параметрами.
 
@@ -49,10 +51,10 @@ SYSTEM_PROMPT_TEMPLATE = """Ты — интеллектуальное ядро �
 - "сегодня" = дата из {current_datetime}
 - "завтра" = следующий день
 - "послезавтра" = через 2 дня
-- "в пятницу" = ближайшая предстоящая пятница
+- "в пятницу", "в понедельник" и т.д. = используй точную дату из календаря ближайших дней выше
 - "через два часа" = текущее время + 2 часа
-- "на эту неделю" = с сегодняшнего дня по ближайшее воскресенье
-- "на следующей неделе" = с ближайшего понедельника по воскресенье
+- "на эту неделю" = с сегодняшнего дня по конец текущей недели
+- "на следующей неделе" = используй даты следующей недели
 
 ПРАВИЛА ОБРАБОТКИ ВРЕМЕНИ:
 - Время всегда возвращай в 24-часовом формате HH:MM (например, "09:00", "14:30", "02:39").
@@ -253,8 +255,43 @@ FEW_SHOT_EXAMPLES = [
     }
 ]
 
-def get_system_prompt() -> str:
-    now = datetime.datetime.now()
+def get_system_prompt(timezone_str: str = "Europe/Moscow") -> str:
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(timezone_str)
+        now = datetime.datetime.now(tz)
+    except Exception:
+        now = datetime.datetime.now()
+
     days_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    now_str = f"{now.strftime('%Y-%m-%d %H:%M')} ({days_ru[now.weekday()]})"
-    return SYSTEM_PROMPT_TEMPLATE.format(current_datetime=now_str)
+    current_weekday_idx = now.weekday()
+    current_weekday_name = days_ru[current_weekday_idx]
+
+    start_of_this_week = now.date() - datetime.timedelta(days=current_weekday_idx)
+    end_of_this_week = start_of_this_week + datetime.timedelta(days=6)
+    start_of_next_week = start_of_this_week + datetime.timedelta(days=7)
+    end_of_next_week = end_of_this_week + datetime.timedelta(days=7)
+
+    days_short = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+    upcoming_days = []
+    for offset in range(7):
+        day = now.date() + datetime.timedelta(days=offset)
+        w_short = days_short[day.weekday()]
+        label = "сегодня" if offset == 0 else ("завтра" if offset == 1 else ("послезавтра" if offset == 2 else w_short))
+        upcoming_days.append(f"{day.strftime('%Y-%m-%d')} ({label})")
+
+    calendar_context = (
+        f"КАЛЕНДАРНЫЙ КОНТЕКСТ ДЛЯ РАСЧЕТА ДАТ:\n"
+        f"- Текущее время пользователя: {now.strftime('%Y-%m-%d %H:%M')} ({current_weekday_name})\n"
+        f"- Часовой пояс: {timezone_str}\n"
+        f"- Текущая неделя: с {start_of_this_week.strftime('%Y-%m-%d')} по {end_of_this_week.strftime('%Y-%m-%d')}\n"
+        f"- Следующая неделя: с {start_of_next_week.strftime('%Y-%m-%d')} по {end_of_next_week.strftime('%Y-%m-%d')}\n"
+        f"- Календарь ближайших 7 дней: {', '.join(upcoming_days)}"
+    )
+
+    now_str = f"{now.strftime('%Y-%m-%d %H:%M')} ({current_weekday_name})"
+    return SYSTEM_PROMPT_TEMPLATE.format(
+        current_datetime=now_str,
+        calendar_context=calendar_context,
+        timezone=timezone_str
+    )

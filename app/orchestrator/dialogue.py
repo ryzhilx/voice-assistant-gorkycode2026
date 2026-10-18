@@ -43,6 +43,13 @@ class DialogueOrchestrator:
         self._history.pop(chat_id, None)
 
     async def handle_text(self, chat_id: int, text: str) -> Reply:
+        if hasattr(self.llm, "set_current_timezone") and callable(getattr(self.llm, "set_current_timezone")):
+            try:
+                tz = await self.db.get_user_timezone(chat_id)
+                self.llm.set_current_timezone(tz)
+            except Exception:
+                pass
+
         pending = self._pending.get(chat_id)
         context = {"awaiting_slot": pending.slot, "draft_data": pending.draft} if pending else None
 
@@ -121,7 +128,13 @@ class DialogueOrchestrator:
             return Reply(response_text)
 
         if result.action == AIAction.GET_SCHEDULE:
-            now_str = str(datetime.datetime.now().date())
+            tz_str = await self.db.get_user_timezone(chat_id)
+            try:
+                from zoneinfo import ZoneInfo
+                now_date = datetime.datetime.now(ZoneInfo(tz_str)).date()
+            except Exception:
+                now_date = datetime.datetime.now().date()
+            now_str = str(now_date)
             start_date = result.params.get("start_date") or now_str
             end_date = result.params.get("end_date") or start_date
             filter_type = result.params.get("filter_type", "all")

@@ -15,6 +15,11 @@ class LLMOrchestrator:
         self.yandex_api_key = settings.yandex_api_key
         self.yandex_folder_id = settings.yandex_folder_id
         self.gigachat_credentials = settings.gigachat_credentials
+        self._current_timezone: str = "Europe/Moscow"
+
+    def set_current_timezone(self, tz: str) -> None:
+        if tz:
+            self._current_timezone = tz
 
     async def parse_intent(
         self,
@@ -46,9 +51,21 @@ class LLMOrchestrator:
 
         return self._heuristic_fallback(text_clean)
 
-    @staticmethod
-    def _extract_date(text: str) -> Optional[datetime.date]:
+    def _extract_date(self, text: str) -> Optional[datetime.date]:
         clean = re.sub(r"^(?:на|к|до)\s+", "", text.strip(), flags=re.IGNORECASE)
+        clean_low = clean.strip().lower()
+
+        if re.match(r"^(?:в\s*)?\d{1,2}(?:[:.-]\d{2})?(?:\s*(?:утра|дня|вечера))?$", clean_low):
+            return None
+        if re.match(r"^\d{1,2}\s*(?:утра|дня|вечера)$", clean_low):
+            return None
+
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.datetime.now(ZoneInfo(self._current_timezone)).replace(tzinfo=None)
+        except Exception:
+            now = datetime.datetime.now()
+
         try:
             import dateparser
             dt = dateparser.parse(
@@ -56,7 +73,9 @@ class LLMOrchestrator:
                 languages=["ru"],
                 settings={
                     "PREFER_DATES_FROM": "future",
-                    "RELATIVE_BASE": datetime.datetime.now()
+                    "RELATIVE_BASE": now,
+                    "TIMEZONE": self._current_timezone,
+                    "TO_TIMEZONE": self._current_timezone
                 }
             )
             if dt:
@@ -65,7 +84,6 @@ class LLMOrchestrator:
             pass
 
         low = text.lower()
-        now = datetime.datetime.now()
         if "сегодня" in low:
             return now.date()
         if "послезавтра" in low:
@@ -143,7 +161,12 @@ class LLMOrchestrator:
 
         if draft.get("start_time") and not draft.get("start_date"):
             if missing_slot == "time":
-                draft["start_date"] = str(datetime.datetime.now().date())
+                try:
+                    from zoneinfo import ZoneInfo
+                    today_date = datetime.datetime.now(ZoneInfo(self._current_timezone)).date()
+                except Exception:
+                    today_date = datetime.datetime.now().date()
+                draft["start_date"] = str(today_date)
                 if not draft.get("title"):
                     draft["title"] = "Встреча"
                 return AIResponse(
@@ -178,7 +201,8 @@ class LLMOrchestrator:
             "Authorization": f"Api-Key {self.yandex_api_key}",
             "x-folder-id": self.yandex_folder_id
         }
-        messages = [{"role": "system", "text": get_system_prompt()}]
+        system_text = get_system_prompt(timezone_str=self._current_timezone)
+        messages = [{"role": "system", "text": system_text}]
         if history:
             messages.extend(history[-4:])
         messages.append({"role": "user", "text": text})
@@ -229,7 +253,11 @@ class LLMOrchestrator:
         return None
 
     def _heuristic_fallback(self, text: str) -> AIResponse:
-        now = datetime.datetime.now()
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.datetime.now(ZoneInfo(self._current_timezone)).replace(tzinfo=None)
+        except Exception:
+            now = datetime.datetime.now()
         low = text.lower().strip()
 
         # Chit-chat & Greetings

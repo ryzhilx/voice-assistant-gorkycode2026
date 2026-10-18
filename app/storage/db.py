@@ -24,6 +24,14 @@ class Database:
         try:
             with conn:
                 conn.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id INTEGER PRIMARY KEY,
+                        username TEXT,
+                        timezone TEXT DEFAULT 'Europe/Moscow',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                conn.execute("""
                     CREATE TABLE IF NOT EXISTS tasks (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id INTEGER NOT NULL,
@@ -228,17 +236,19 @@ class Database:
             try:
                 rows = conn.execute(
                     """
-                    SELECT id, user_id, title, due_date, due_time, is_reminder
-                    FROM tasks
-                    WHERE status != 'completed'
-                      AND reminder_sent = 0
-                      AND due_date IS NOT NULL
-                      AND due_time IS NOT NULL
+                    SELECT t.id, t.user_id, t.title, t.due_date, t.due_time, t.is_reminder,
+                           COALESCE(u.timezone, 'Europe/Moscow') as timezone
+                    FROM tasks t
+                    LEFT JOIN users u ON t.user_id = u.user_id
+                    WHERE t.status != 'completed'
+                      AND t.reminder_sent = 0
+                      AND t.due_date IS NOT NULL
+                      AND t.due_time IS NOT NULL
                       AND (
-                          (due_date = ? AND due_time <= ?)
-                          OR (due_date < ?)
+                          (t.due_date = ? AND t.due_time <= ?)
+                          OR (t.due_date < ?)
                       )
-                    ORDER BY due_date ASC, due_time ASC
+                    ORDER BY t.due_date ASC, t.due_time ASC
                     """,
                     (current_date, current_time, current_date)
                 ).fetchall()
@@ -269,16 +279,18 @@ class Database:
             try:
                 rows = conn.execute(
                     """
-                    SELECT id, user_id, title, start_date, start_time, duration_minutes, participants
-                    FROM meetings
-                    WHERE reminder_sent = 0
-                      AND start_date IS NOT NULL
-                      AND start_time IS NOT NULL
+                    SELECT m.id, m.user_id, m.title, m.start_date, m.start_time, m.duration_minutes, m.participants,
+                           COALESCE(u.timezone, 'Europe/Moscow') as timezone
+                    FROM meetings m
+                    LEFT JOIN users u ON m.user_id = u.user_id
+                    WHERE m.reminder_sent = 0
+                      AND m.start_date IS NOT NULL
+                      AND m.start_time IS NOT NULL
                       AND (
-                          (start_date = ? AND start_time <= ?)
-                          OR (start_date < ?)
+                          (m.start_date = ? AND m.start_time <= ?)
+                          OR (m.start_date < ?)
                       )
-                    ORDER BY start_date ASC, start_time ASC
+                    ORDER BY m.start_date ASC, m.start_time ASC
                     """,
                     (current_date, current_time, current_date)
                 ).fetchall()
@@ -302,3 +314,37 @@ class Database:
                 if not self._is_memory:
                     conn.close()
         return await asyncio.to_thread(_update)
+
+    async def get_user_timezone(self, user_id: int) -> str:
+        def _get():
+            conn = self._get_connection()
+            try:
+                row = conn.execute(
+                    "SELECT timezone FROM users WHERE user_id = ?",
+                    (user_id,)
+                ).fetchone()
+                return row["timezone"] if row and row["timezone"] else "Europe/Moscow"
+            finally:
+                if not self._is_memory:
+                    conn.close()
+        return await asyncio.to_thread(_get)
+
+    async def set_user_timezone(self, user_id: int, timezone: str, username: Optional[str] = None) -> None:
+        def _set():
+            conn = self._get_connection()
+            try:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO users (user_id, username, timezone)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(user_id) DO UPDATE SET
+                            timezone = excluded.timezone,
+                            username = COALESCE(excluded.username, users.username)
+                        """,
+                        (user_id, username, timezone)
+                    )
+            finally:
+                if not self._is_memory:
+                    conn.close()
+        return await asyncio.to_thread(_set)

@@ -13,7 +13,15 @@ logger = logging.getLogger(__name__)
 
 
 async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetime.datetime] = None) -> int:
-    current_dt = now or datetime.datetime.now()
+    if now is not None:
+        current_dt = now
+    else:
+        try:
+            from zoneinfo import ZoneInfo
+            current_dt = datetime.datetime.now(ZoneInfo("Europe/Moscow"))
+        except Exception:
+            current_dt = datetime.datetime.now()
+
     current_date = current_dt.strftime("%Y-%m-%d")
     current_time = current_dt.strftime("%H:%M")
 
@@ -23,6 +31,18 @@ async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetim
     count = 0
 
     for task in due_tasks:
+        if now is None:
+            user_tz = task.get("timezone") or "Europe/Moscow"
+            try:
+                from zoneinfo import ZoneInfo
+                u_now = datetime.datetime.now(ZoneInfo(user_tz))
+            except Exception:
+                u_now = datetime.datetime.now()
+            u_date = u_now.strftime("%Y-%m-%d")
+            u_time = u_now.strftime("%H:%M")
+            if not ((task["due_date"] < u_date) or (task["due_date"] == u_date and task["due_time"] <= u_time)):
+                continue
+
         task_id = task["id"]
         user_id = task["user_id"]
         title = task["title"]
@@ -49,6 +69,18 @@ async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetim
             await db.mark_task_reminder_sent(task_id)
 
     for meeting in due_meetings:
+        if now is None:
+            user_tz = meeting.get("timezone") or "Europe/Moscow"
+            try:
+                from zoneinfo import ZoneInfo
+                u_now = datetime.datetime.now(ZoneInfo(user_tz))
+            except Exception:
+                u_now = datetime.datetime.now()
+            u_date = u_now.strftime("%Y-%m-%d")
+            u_time = u_now.strftime("%H:%M")
+            if not ((meeting["start_date"] < u_date) or (meeting["start_date"] == u_date and meeting["start_time"] <= u_time)):
+                continue
+
         meeting_id = meeting["id"]
         user_id = meeting["user_id"]
         title = meeting["title"]

@@ -89,6 +89,30 @@ class ToolCallingAgent:
             f"7. При вызове инструментов в текстовом формате используй JSON вида: {{\"tool\": \"tool_name\", \"arguments\": {{...}}}} или список инструментов [{{...}}, {{...}}]."
         )
 
+    def _normalize_tool_name(self, name: Optional[str]) -> Optional[str]:
+        if not name:
+            return None
+        norm = name.strip().lower()
+        alias_map = {
+            "archive": "get_archive",
+            "get_archive": "get_archive",
+            "show_archive": "get_archive",
+            "schedule": "get_schedule",
+            "get_schedule": "get_schedule",
+            "show_schedule": "get_schedule",
+            "search": "search_records",
+            "search_records": "search_records",
+            "reschedule": "reschedule_record",
+            "reschedule_record": "reschedule_record",
+            "create_task": "create_task",
+            "complete_task": "complete_task",
+            "create_meeting": "create_meeting",
+            "delete_record": "delete_record",
+            "update_record_title": "update_record_title",
+        }
+        mapped = alias_map.get(norm, norm)
+        return mapped if mapped in self.tools else None
+
     async def _call_llm(self, chat_id: int, text: str, tz_str: str) -> Tuple[Optional[List[ToolCall]], Optional[str]]:
         if not (self.yandex_api_key and self.yandex_folder_id):
             return None, None
@@ -121,23 +145,32 @@ class ToolCallingAgent:
                 msg = data.get("result", {}).get("alternatives", [{}])[0].get("message", {})
 
                 raw_calls = []
-                if "calls" in msg and isinstance(msg["calls"], list):
+                if "toolCallList" in msg and isinstance(msg["toolCallList"], dict):
+                    raw_calls.extend(msg["toolCallList"].get("toolCalls", []))
+                elif "tool_calls" in msg and isinstance(msg["tool_calls"], list):
+                    raw_calls.extend(msg["tool_calls"])
+                elif "toolCalls" in msg and isinstance(msg["toolCalls"], list):
+                    raw_calls.extend(msg["toolCalls"])
+                elif "calls" in msg and isinstance(msg["calls"], list):
                     raw_calls.extend(msg["calls"])
                 elif "call" in msg and isinstance(msg["call"], dict):
                     raw_calls.append(msg["call"])
 
                 tool_calls: List[ToolCall] = []
                 for c in raw_calls:
-                    fn = c.get("functionCall") if isinstance(c, dict) else None
-                    if fn:
-                        name = fn.get("name")
-                        args = fn.get("arguments", {})
-                        if isinstance(args, str):
-                            try:
-                                args = json.loads(args)
-                            except Exception:
-                                args = {}
-                        tool_calls.append(ToolCall(name=name, arguments=args))
+                    fn = None
+                    if isinstance(c, dict):
+                        fn = c.get("functionCall") or c.get("function")
+                    if fn and isinstance(fn, dict):
+                        name = self._normalize_tool_name(fn.get("name"))
+                        if name:
+                            args = fn.get("arguments", {})
+                            if isinstance(args, str):
+                                try:
+                                    args = json.loads(args)
+                                except Exception:
+                                    args = {}
+                            tool_calls.append(ToolCall(name=name, arguments=args))
 
                 if tool_calls:
                     return tool_calls, None
@@ -150,14 +183,14 @@ class ToolCallingAgent:
                             parsed = json.loads(json_match.group(0))
                             if isinstance(parsed, list):
                                 for item in parsed:
-                                    t_name = item.get("tool") or item.get("name") or item.get("action")
+                                    t_name = self._normalize_tool_name(item.get("tool") or item.get("name") or item.get("action"))
                                     t_args = item.get("arguments") or item.get("params", {})
-                                    if t_name in self.tools:
+                                    if t_name:
                                         tool_calls.append(ToolCall(name=t_name, arguments=t_args))
                             elif isinstance(parsed, dict):
-                                t_name = parsed.get("tool") or parsed.get("name") or parsed.get("action")
+                                t_name = self._normalize_tool_name(parsed.get("tool") or parsed.get("name") or parsed.get("action"))
                                 t_args = parsed.get("arguments") or parsed.get("params", {})
-                                if t_name in self.tools:
+                                if t_name:
                                     tool_calls.append(ToolCall(name=t_name, arguments=t_args))
                             if tool_calls:
                                 return tool_calls, None
@@ -176,6 +209,31 @@ class ToolCallingAgent:
             self.llm.set_current_timezone(tz_str)
 
         tool_calls, direct_reply = await self._call_llm(chat_id, message, tz_str)
+
+        if not tool_calls and not direct_reply:
+            low = message.strip().lower()
+            if low in ("архив", "покажи архив", "открой архив"):
+                tool = self.tools.get("get_archive")
+                if tool:
+                    res = await tool.execute(chat_id)
+                    self._record_turn(chat_id, message, res.output)
+                    return res.output
+            elif low in ("расписание", "планы", "что на сегодня", "на сегодня", "сегодня"):
+                tool = self.tools.get("get_schedule")
+                if tool:
+                    res = await tool.execute(chat_id)
+                    self._record_turn(chat_id, message, res.output)
+                    return res.output
+            elif low in ("задачи", "мои задачи", "список задач"):
+                tool = self.tools.get("get_schedule")
+                if tool:
+                    res = await tool.execute(chat_id, record_type="tasks")
+                    self._record_turn(chat_id, message, res.output)
+                    return res.output
+            elif low in ("помощь", "справка", "help"):
+                reply = "Я могу создавать напоминания и задачи, бронировать встречи в календаре, показывать расписание и архив."
+                self._record_turn(chat_id, message, reply)
+                return reply
 
         if tool_calls:
             results: List[ToolExecutionResult] = []
@@ -199,7 +257,7 @@ class ToolCallingAgent:
             self._record_turn(chat_id, message, direct_reply)
             return direct_reply
 
-        return "Сервис временно недоступен. Пожалуйста, попробуйте позже."
+        return "Не удалось распознать команду. Чем я могу помочь?"
 
     def _record_turn(self, chat_id: int, user_msg: str, assistant_msg: str) -> None:
         if chat_id not in self._history:

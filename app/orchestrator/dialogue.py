@@ -1,3 +1,4 @@
+import inspect
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -46,11 +47,17 @@ class DialogueOrchestrator:
 
     async def aclose(self) -> None:
         if self.agent and hasattr(self.agent, "aclose") and callable(getattr(self.agent, "aclose")):
-            await self.agent.aclose()
+            res = self.agent.aclose()
+            if inspect.isawaitable(res):
+                await res
         if hasattr(self.llm, "aclose") and callable(getattr(self.llm, "aclose")):
-            await self.llm.aclose()
+            res = self.llm.aclose()
+            if inspect.isawaitable(res):
+                await res
         if hasattr(self.search_engine, "aclose") and callable(getattr(self.search_engine, "aclose")):
-            await self.search_engine.aclose()
+            res = self.search_engine.aclose()
+            if inspect.isawaitable(res):
+                await res
 
     async def handle_text(self, chat_id: int, text: str) -> Reply:
         if self.agent is not None:

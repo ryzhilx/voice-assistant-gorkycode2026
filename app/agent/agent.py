@@ -2,7 +2,7 @@ import datetime
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -11,7 +11,6 @@ from app.agent.tools import build_default_tools, get_tools_json_schema
 from app.agent.tools.base import BaseTool
 from app.ai.embeddings import SemanticSearchEngine
 from app.ai.llm_client import LLMOrchestrator
-from app.ai.schemas import AIAction
 from app.config import settings
 from app.storage.db import Database
 
@@ -82,16 +81,17 @@ class ToolCallingAgent:
             f"{chr(10).join(tools_desc)}\n\n"
             f"ПРАВИЛА:\n"
             f"1. Если для выполнения запроса требуется вызвать инструмент, вызови его с точными аргументами.\n"
-            f"2. Если пользователь хочет создать встречу или задачу, но не указал обязательное время или дату — НЕ вызывай инструмент, а вежливо и кратко спроси пользователя на русском языке.\n"
-            f"3. Если пользователь оперативно корректирует предыдущее действие (например: «а нет, давай через 10 минут лучше», «нет, давай в 19:00», «перенеси на завтра») — используй инструмент reschedule_record с target='last'.\n"
-            f"4. Если пользователь сообщает о выполнении задачи в прошедшем времени (например: «я выпил воды», «купил молоко», «сделал отчет») — используй complete_task.\n"
-            f"5. Если запрос — приветствие или общий разговор, ответь лаконично и естественно без вызова инструментов.\n"
-            f"6. При вызове инструментов в текстовом формате используй JSON вида: {{\"tool\": \"tool_name\", \"arguments\": {{...}}}}."
+            f"2. Если запрос содержит несколько действий (например: напомнить про кофе через 8 минут и про чай через 3 минуты) — вызови инструмент для каждого действия.\n"
+            f"3. Если пользователь хочет создать встречу или задачу, но не указал обязательное время или дату — НЕ вызывай инструмент, а вежливо и кратко спроси пользователя на русском языке.\n"
+            f"4. Если пользователь оперативно корректирует предыдущее действие (например: «а нет, давай через 10 минут лучше», «нет, давай в 19:00», «перенеси на завтра») — используй инструмент reschedule_record с target='last'.\n"
+            f"5. Если пользователь сообщает о выполнении задачи в прошедшем времени (например: «я выпил воды», «купил молоко», «сделал отчет») — используй complete_task.\n"
+            f"6. Если запрос — приветствие, вопрос или общий разговор, ответь лаконично, вежливо и естественно на русском языке без вызова инструментов.\n"
+            f"7. При вызове инструментов в текстовом формате используй JSON вида: {{\"tool\": \"tool_name\", \"arguments\": {{...}}}} или список инструментов [{{...}}, {{...}}]."
         )
 
-    async def _call_llm(self, chat_id: int, text: str, tz_str: str) -> Optional[List[ToolCall]]:
+    async def _call_llm(self, chat_id: int, text: str, tz_str: str) -> Tuple[Optional[List[ToolCall]], Optional[str]]:
         if not (self.yandex_api_key and self.yandex_folder_id):
-            return None
+            return None, None
 
         url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
         headers = {
@@ -120,96 +120,86 @@ class ToolCallingAgent:
                 data = resp.json()
                 msg = data.get("result", {}).get("alternatives", [{}])[0].get("message", {})
 
-                function_call = msg.get("call", {}).get("functionCall")
-                if function_call:
-                    name = function_call.get("name")
-                    args = function_call.get("arguments", {})
-                    if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except Exception:
-                            args = {}
-                    return [ToolCall(name=name, arguments=args)]
+                raw_calls = []
+                if "calls" in msg and isinstance(msg["calls"], list):
+                    raw_calls.extend(msg["calls"])
+                elif "call" in msg and isinstance(msg["call"], dict):
+                    raw_calls.append(msg["call"])
+
+                tool_calls: List[ToolCall] = []
+                for c in raw_calls:
+                    fn = c.get("functionCall") if isinstance(c, dict) else None
+                    if fn:
+                        name = fn.get("name")
+                        args = fn.get("arguments", {})
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except Exception:
+                                args = {}
+                        tool_calls.append(ToolCall(name=name, arguments=args))
+
+                if tool_calls:
+                    return tool_calls, None
 
                 raw_text = msg.get("text", "").strip()
-                json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-                if json_match:
-                    try:
-                        parsed = json.loads(json_match.group(0))
-                        t_name = parsed.get("tool") or parsed.get("name") or parsed.get("action")
-                        t_args = parsed.get("arguments") or parsed.get("params", {})
-                        if t_name in self.tools:
-                            return [ToolCall(name=t_name, arguments=t_args)]
-                    except Exception:
-                        pass
+                if raw_text:
+                    json_match = re.search(r"(\[.*\]|\{.*\})", raw_text, re.DOTALL)
+                    if json_match:
+                        try:
+                            parsed = json.loads(json_match.group(0))
+                            if isinstance(parsed, list):
+                                for item in parsed:
+                                    t_name = item.get("tool") or item.get("name") or item.get("action")
+                                    t_args = item.get("arguments") or item.get("params", {})
+                                    if t_name in self.tools:
+                                        tool_calls.append(ToolCall(name=t_name, arguments=t_args))
+                            elif isinstance(parsed, dict):
+                                t_name = parsed.get("tool") or parsed.get("name") or parsed.get("action")
+                                t_args = parsed.get("arguments") or parsed.get("params", {})
+                                if t_name in self.tools:
+                                    tool_calls.append(ToolCall(name=t_name, arguments=t_args))
+                            if tool_calls:
+                                return tool_calls, None
+                        except Exception:
+                            pass
+
+                    return None, raw_text
         except Exception as e:
             logger.warning("Agent LLM call error: %s", e)
 
-        return None
-
-    def _fallback_to_tool_call(self, text: str, context: Optional[Dict[str, Any]] = None) -> Optional[List[ToolCall]]:
-        intent_res = self.llm._heuristic_fallback(text)
-        action = intent_res.action
-        params = intent_res.params
-
-        mapping = {
-            AIAction.CREATE_TASK: "create_task",
-            AIAction.CREATE_MEETING: "create_meeting",
-            AIAction.GET_SCHEDULE: "get_schedule",
-            AIAction.GET_ARCHIVE: "get_archive",
-            AIAction.SEARCH_RECORDS: "search_records",
-            AIAction.RESCHEDULE_RECORD: "reschedule_record",
-            AIAction.COMPLETE_RECORD: "complete_task",
-            AIAction.DELETE_RECORD: "delete_record",
-            AIAction.UPDATE_RECORD: "update_record_title",
-        }
-
-        tool_name = mapping.get(action)
-        if tool_name and tool_name in self.tools:
-            return [ToolCall(name=tool_name, arguments=params)]
-
-        return None
+        return None, None
 
     async def run(self, chat_id: int, message: str) -> str:
         tz_str = await self.db.get_user_timezone(chat_id)
         if hasattr(self.llm, "set_current_timezone") and callable(getattr(self.llm, "set_current_timezone")):
             self.llm.set_current_timezone(tz_str)
 
-        tool_calls = await self._call_llm(chat_id, message, tz_str)
+        tool_calls, direct_reply = await self._call_llm(chat_id, message, tz_str)
 
-        if tool_calls is None:
-            tool_calls = self._fallback_to_tool_call(message)
+        if tool_calls:
+            results: List[ToolExecutionResult] = []
+            for call in tool_calls:
+                tool = self.tools.get(call.name)
+                if tool:
+                    res = await tool.execute(chat_id, **call.arguments)
+                    results.append(res)
+                else:
+                    results.append(ToolExecutionResult(tool_name=call.name, success=False, output=f"Инструмент «{call.name}» не найден."))
 
-        if not tool_calls:
-            low = message.lower().strip()
-            if any(w in low for w in ["привет", "здравствуй", "добрый день", "хай"]):
-                reply = "Привет! Я персональный голосовой ассистент. Могу записать задачу, назначить встречу или показать расписание."
-            elif any(w in low for w in ["что ты умеешь", "какие возможности", "помощь"]):
-                reply = "Я умею ставить задачи и напоминания, бронировать встречи в календаре, показывать расписание на день/неделю и находить старые записи."
-            elif any(w in low for w in ["встреч", "поставь встречу", "добавь встречу"]) and not re.search(r"\d{1,2}[:.]\d{2}", low):
-                reply = "На какую дату и время вы хотите запланировать встречу?"
+            if len(results) == 1:
+                final_reply = results[0].output
             else:
-                reply = "Чем я могу вам помочь?"
+                final_reply = "\n\n".join([f"{idx}️⃣ {r.output}" for idx, r in enumerate(results, 1)])
 
-            self._record_turn(chat_id, message, reply)
-            return reply
+            self._record_turn(chat_id, message, final_reply)
+            return final_reply
 
-        results: List[ToolExecutionResult] = []
-        for call in tool_calls:
-            tool = self.tools.get(call.name)
-            if tool:
-                res = await tool.execute(chat_id, **call.arguments)
-                results.append(res)
-            else:
-                results.append(ToolExecutionResult(tool_name=call.name, success=False, output=f"Инструмент «{call.name}» не найден."))
+        if direct_reply:
+            self._record_turn(chat_id, message, direct_reply)
+            return direct_reply
 
-        if len(results) == 1:
-            final_reply = results[0].output
-        else:
-            final_reply = "\n\n".join([f"{idx}️⃣ {r.output}" for idx, r in enumerate(results, 1)])
-
-        self._record_turn(chat_id, message, final_reply)
-        return final_reply
+        return "Сервис временно недоступен. Пожалуйста, попробуйте позже."
 
     def _record_turn(self, chat_id: int, user_msg: str, assistant_msg: str) -> None:
         if chat_id not in self._history:

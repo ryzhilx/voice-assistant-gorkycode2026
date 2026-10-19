@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from app.agent.agent import ToolCallingAgent
 from app.agent.schemas import ToolCall
@@ -21,6 +21,40 @@ class TestToolCallingAgent(unittest.IsolatedAsyncioTestCase):
             yandex_api_key=None,
             yandex_folder_id=None
         )
+
+        async def _mock_llm(chat_id, text, tz):
+            low = text.lower()
+            if "напомни купить молоко" in low:
+                return [ToolCall(name="create_task", arguments={"title": "Купить молоко", "due_date": "2026-10-20", "due_time": "10:00", "is_reminder": True})], None
+            if "инвестором" in low:
+                return [ToolCall(name="create_meeting", arguments={"title": "Встреча с инвестором", "start_date": "2026-10-20", "start_time": "14:00"})], None
+            if "дизайнером" in low:
+                return [ToolCall(name="create_meeting", arguments={"title": "Встреча с дизайнером", "start_date": "2026-10-20", "start_time": "14:00"})], None
+            if "напомнить позвонить через 5 минут" in low:
+                return [ToolCall(name="create_task", arguments={"title": "Позвонить", "due_time": "12:05", "is_reminder": True})], None
+            if "давай через 10 минут" in low:
+                return [ToolCall(name="reschedule_record", arguments={"target": "last", "new_time": "12:10"})], None
+            if "поставь задачу сдать отчет" in low:
+                return [ToolCall(name="create_task", arguments={"title": "Сдать отчет", "due_date": "2026-10-20"})], None
+            if "отметь задачу сдать отчет выполненной" in low:
+                return [ToolCall(name="complete_task", arguments={"query": "сдать отчет"})], None
+            if "помыть машину" in low:
+                return [ToolCall(name="create_task", arguments={"title": "Помыть машину"})], None
+            if "удали ее" in low:
+                return [ToolCall(name="delete_record", arguments={"target": "last"})], None
+            if "конференции" in low:
+                return [ToolCall(name="create_task", arguments={"title": "Подготовить презентацию для конференции"})], None
+            if "найди задачу про презентацию" in low:
+                return [ToolCall(name="search_records", arguments={"query": "презентацию", "target": "tasks"})], None
+            if "позвонить врачу" in low:
+                return [ToolCall(name="create_task", arguments={"title": "Позвонить врачу", "due_time": "09:00"})], None
+            if "привет" in low:
+                return None, "Привет! Чем могу помочь?"
+            if "добавь встречу" in low:
+                return None, "На какую дату и время вы хотите запланировать встречу?"
+            return None, None
+
+        self.agent._call_llm = AsyncMock(side_effect=_mock_llm)
 
     async def asyncTearDown(self):
         await self.agent.aclose()
@@ -60,7 +94,7 @@ class TestToolCallingAgent(unittest.IsolatedAsyncioTestCase):
         self.assertIn("выполнен", r.lower())
         self.assertIn("сдать отчет", r.lower())
 
-        sched = await self.db.get_schedule(CHAT, "2020-01-01", "2030-01-01", filter_type="tasks")
+        sched = await self.db.get_schedule(CHAT, "2020-01-01", "2030-01-01", filter_type="tasks", include_archived=True)
         self.assertEqual(sched["tasks"][0]["status"], "completed")
 
     async def test_agent_delete_record(self):

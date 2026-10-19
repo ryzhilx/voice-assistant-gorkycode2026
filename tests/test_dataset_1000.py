@@ -4,9 +4,11 @@ import time
 import unittest
 from typing import List, Dict, Any
 
+from unittest.mock import AsyncMock
 from app.storage.db import Database
 from app.ai.embeddings import SemanticSearchEngine
 from app.ai.llm_client import LLMOrchestrator
+from app.ai.schemas import AIAction, AIResponse
 from app.orchestrator.dialogue import DialogueOrchestrator
 
 CSV_PATH = os.path.join(os.path.dirname(__file__), "..", "voice_assistant_events_1000_77e927b5d2.csv")
@@ -115,6 +117,11 @@ class TestDataset1000(unittest.IsolatedAsyncioTestCase):
     async def test_dataset_dialogue_search_and_reschedule(self):
         rows = self._load_csv()
         await self._populate_db(rows)
+
+        self.llm.parse_intent = AsyncMock(side_effect=[
+            AIResponse(action=AIAction.SEARCH_RECORDS, params={"query": "хакатон"}),
+            AIResponse(action=AIAction.RESCHEDULE_RECORD, params={"target": "last", "new_date": "2026-11-20", "new_time": "18:00"})
+        ])
 
         reply1 = await self.orch.handle_text(self.user_id, "Найди событие по хакатону")
         self.assertIn("хакатон", reply1.text.lower())

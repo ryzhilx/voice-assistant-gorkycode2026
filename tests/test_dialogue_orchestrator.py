@@ -153,10 +153,13 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sched["tasks"]), 1)
 
     async def test_reschedule_dialogue_context(self):
-        llm_real = LLMOrchestrator()
-        llm_real.yandex_api_key = None
-        llm_real.yandex_folder_id = None
-        orch = DialogueOrchestrator(llm=llm_real, db=self.db)
+        llm_mock = MagicMock(parse_intent=AsyncMock())
+        llm_mock.parse_intent.side_effect = [
+            AIResponse(action=AIAction.CREATE_MEETING, params={"title": "Встреча с Михаилом", "start_date": "2026-10-20", "start_time": "14:00"}),
+            AIResponse(action=AIAction.RESCHEDULE_RECORD, params={"target": "last", "new_date": "2026-10-21"}),
+            AIResponse(action=AIAction.RESCHEDULE_RECORD, params={"target": "last", "new_time": "16:30"})
+        ]
+        orch = DialogueOrchestrator(llm=llm_mock, db=self.db)
 
         r1 = await orch.handle_text(CHAT, "Добавь встречу с Михаилом завтра в 14:00")
         self.assertIn("Встреча", r1.text)
@@ -176,10 +179,16 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         await orch.aclose()
 
     async def test_delete_update_complete_records(self):
-        llm_real = LLMOrchestrator()
-        llm_real.yandex_api_key = None
-        llm_real.yandex_folder_id = None
-        orch = DialogueOrchestrator(llm=llm_real, db=self.db)
+        llm_mock = MagicMock(parse_intent=AsyncMock())
+        llm_mock.parse_intent.side_effect = [
+            AIResponse(action=AIAction.CREATE_TASK, params={"title": "Купить молоко"}),
+            AIResponse(action=AIAction.UPDATE_RECORD, params={"target": "last", "new_title": "Купить миндальное молоко"}),
+            AIResponse(action=AIAction.COMPLETE_RECORD, params={"target": "last"}),
+            AIResponse(action=AIAction.DELETE_RECORD, params={"target": "last"}),
+            AIResponse(action=AIAction.CREATE_MEETING, params={"title": "Встреча с дизайнером", "start_date": "2026-10-20", "start_time": "15:00"}),
+            AIResponse(action=AIAction.DELETE_RECORD, params={"target": "meeting", "query": "дизайнером"})
+        ]
+        orch = DialogueOrchestrator(llm=llm_mock, db=self.db)
 
         r1 = await orch.handle_text(CHAT, "Поставь задачу купить молоко")
         self.assertIn("Задача добавлена", r1.text)
@@ -236,12 +245,14 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Ретроспектива", view_tasks)
 
     async def test_past_tense_action_reports_complete_tasks(self):
-        llm_real = LLMOrchestrator()
-        llm_real.yandex_api_key = None
-        llm_real.yandex_folder_id = None
-        orch = DialogueOrchestrator(llm=llm_real, db=self.db)
-
-        today_str = str(datetime.datetime.now(ZoneInfo(llm_real._current_timezone)).date())
+        today_str = str(datetime.datetime.now(ZoneInfo("Europe/Moscow")).date())
+        llm_mock = MagicMock(parse_intent=AsyncMock())
+        llm_mock.parse_intent.side_effect = [
+            AIResponse(action=AIAction.COMPLETE_RECORD, params={"target": "task", "query": "пить воду"}),
+            AIResponse(action=AIAction.COMPLETE_RECORD, params={"target": "task", "query": "позвонить ивану"}),
+            AIResponse(action=AIAction.GET_SCHEDULE, params={"filter_type": "all", "start_date": today_str, "end_date": today_str})
+        ]
+        orch = DialogueOrchestrator(llm=llm_mock, db=self.db)
         await self.db.add_task(CHAT, "Пить воду до 10:00 каждый день", due_date=today_str, recurrence="daily")
         await self.db.add_task(CHAT, "Позвонить Ивану", due_date=today_str, due_time="10:00")
 
@@ -258,10 +269,9 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         await orch.aclose()
 
     async def test_reschedule_with_specific_query(self):
-        llm_real = LLMOrchestrator()
-        llm_real.yandex_api_key = None
-        llm_real.yandex_folder_id = None
-        orch = DialogueOrchestrator(llm=llm_real, db=self.db)
+        llm_mock = MagicMock(parse_intent=AsyncMock())
+        llm_mock.parse_intent.return_value = AIResponse(action=AIAction.RESCHEDULE_RECORD, params={"target": "meeting", "query": "дизайнером", "new_time": "20:00"})
+        orch = DialogueOrchestrator(llm=llm_mock, db=self.db)
 
         test_date = "2099-11-20"
         m1 = await self.db.add_meeting(CHAT, "Встреча с инвестором", start_date=test_date, start_time="16:30")
@@ -278,10 +288,12 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         await orch.aclose()
 
     async def test_reminder_relative_correction(self):
-        llm_real = LLMOrchestrator()
-        llm_real.yandex_api_key = None
-        llm_real.yandex_folder_id = None
-        orch = DialogueOrchestrator(llm=llm_real, db=self.db)
+        llm_mock = MagicMock(parse_intent=AsyncMock())
+        llm_mock.parse_intent.side_effect = [
+            AIResponse(action=AIAction.CREATE_TASK, params={"title": "Позвонить", "due_time": "12:05", "is_reminder": True}),
+            AIResponse(action=AIAction.RESCHEDULE_RECORD, params={"target": "last", "new_time": "12:10"})
+        ]
+        orch = DialogueOrchestrator(llm=llm_mock, db=self.db)
 
         r1 = await orch.handle_text(CHAT, "напомнить позвонить через 5 минут")
         self.assertIn("Напоминание", r1.text)

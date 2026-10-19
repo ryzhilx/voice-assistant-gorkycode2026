@@ -1,6 +1,7 @@
 import logging
 from typing import Any, Dict, List, Optional
 
+from app.agent.agent import ToolCallingAgent
 from app.ai.embeddings import SemanticSearchEngine
 from app.ai.llm_client import LLMOrchestrator
 from app.ai.schemas import AIAction, AIResponse
@@ -20,12 +21,14 @@ class DialogueOrchestrator:
         llm: Optional[LLMOrchestrator] = None,
         db: Optional[Database] = None,
         search_engine: Optional[SemanticSearchEngine] = None,
-        handlers: Optional[Dict[AIAction, BaseActionHandler]] = None
+        handlers: Optional[Dict[AIAction, BaseActionHandler]] = None,
+        agent: Optional[ToolCallingAgent] = None
     ):
         self.llm = llm or LLMOrchestrator()
         self.db = db or Database(settings.database_path)
         self.search_engine = search_engine or SemanticSearchEngine()
         self.handlers: Dict[AIAction, BaseActionHandler] = handlers or get_default_handlers()
+        self.agent: Optional[ToolCallingAgent] = agent
         self._pending: Dict[int, PendingClarification] = {}
         self._history: Dict[int, List[Dict[str, str]]] = {}
         self._last_event: Dict[int, Dict[str, Any]] = {}
@@ -36,14 +39,22 @@ class DialogueOrchestrator:
     def reset(self, chat_id: int) -> None:
         self._pending.pop(chat_id, None)
         self._history.pop(chat_id, None)
+        if self.agent:
+            self.agent.reset(chat_id)
 
     async def aclose(self) -> None:
+        if self.agent and hasattr(self.agent, "aclose") and callable(getattr(self.agent, "aclose")):
+            await self.agent.aclose()
         if hasattr(self.llm, "aclose") and callable(getattr(self.llm, "aclose")):
             await self.llm.aclose()
         if hasattr(self.search_engine, "aclose") and callable(getattr(self.search_engine, "aclose")):
             await self.search_engine.aclose()
 
     async def handle_text(self, chat_id: int, text: str) -> Reply:
+        if self.agent is not None:
+            answer = await self.agent.run(chat_id, text)
+            return Reply(answer)
+
         if hasattr(self.llm, "set_current_timezone") and callable(getattr(self.llm, "set_current_timezone")):
             try:
                 tz = await self.db.get_user_timezone(chat_id)

@@ -1,4 +1,5 @@
 import datetime
+import inspect
 import json
 import logging
 import re
@@ -49,9 +50,13 @@ class ToolCallingAgent:
         if self._http_client and not self._http_client.is_closed:
             await self._http_client.aclose()
         if hasattr(self.search_engine, "aclose") and callable(getattr(self.search_engine, "aclose")):
-            await self.search_engine.aclose()
+            res = self.search_engine.aclose()
+            if inspect.isawaitable(res):
+                await res
         if hasattr(self.llm, "aclose") and callable(getattr(self.llm, "aclose")):
-            await self.llm.aclose()
+            res = self.llm.aclose()
+            if inspect.isawaitable(res):
+                await res
 
     def reset(self, chat_id: int) -> None:
         self._history.pop(chat_id, None)

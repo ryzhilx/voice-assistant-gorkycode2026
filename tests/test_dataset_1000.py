@@ -118,9 +118,10 @@ class TestDataset1000(unittest.IsolatedAsyncioTestCase):
         rows = self._load_csv()
         await self._populate_db(rows)
 
-        self.llm.parse_intent = AsyncMock(side_effect=[
-            AIResponse(action=AIAction.SEARCH_RECORDS, params={"query": "хакатон"}),
-            AIResponse(action=AIAction.RESCHEDULE_RECORD, params={"target": "last", "new_date": "2026-11-20", "new_time": "18:00"})
+        from app.agent.schemas import ToolCall
+        self.orch.agent._call_llm = AsyncMock(side_effect=[
+            ([ToolCall(name="search_records", arguments={"query": "хакатон"})], None),
+            ([ToolCall(name="reschedule_record", arguments={"target": "last", "new_date": "2026-11-20", "new_time": "18:00"})], None)
         ])
 
         reply1 = await self.orch.handle_text(self.user_id, "Найди событие по хакатону")

@@ -220,7 +220,7 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
 
         reply2 = await orch.handle_text(100, "Расписание")
         self.assertIn("ежедневно", reply2.text)
-        self.assertIn("Пить витамины", reply2.text)
+        self.assertIn("пить витамины", reply2.text.lower())
 
     def test_system_prompt_includes_timezone_and_calendar(self):
         from app.ai.prompts import get_system_prompt

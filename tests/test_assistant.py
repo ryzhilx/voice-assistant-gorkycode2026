@@ -5,6 +5,7 @@ from app.ai.embeddings import SemanticSearchEngine
 from app.ai.schemas import AIAction
 from app.speech.speechkit import YandexSpeechKitService
 
+@unittest.skipUnless(settings.yandex_api_key and settings.yandex_folder_id, "Yandex credentials not configured")
 class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.orchestrator = LLMOrchestrator()
@@ -259,7 +260,7 @@ class TestSemanticSearch(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import AsyncMock
         from app.ai.schemas import AIResponse
         orch = LLMOrchestrator()
-        orch._call_yandex_gpt = AsyncMock(return_value=AIResponse(
+        orch.parse_intent = AsyncMock(return_value=AIResponse(
             action=AIAction.SEARCH_RECORDS,
             params={"record_type": "tasks", "query": "договору"}
         ))

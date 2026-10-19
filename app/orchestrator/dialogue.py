@@ -60,8 +60,12 @@ class DialogueOrchestrator:
 
         pending = self._pending.get(chat_id)
         context = {"awaiting_slot": pending.slot, "draft_data": pending.draft} if pending else None
+        history = self._history.get(chat_id)
 
-        result = await self.llm.parse_intent(text, context)
+        if isinstance(self.llm, LLMOrchestrator):
+            result = await self.llm.parse_intent(text, context, history=history)
+        else:
+            result = await self.llm.parse_intent(text, context)
         reply = await self._dispatch(chat_id, result, raw_text=text)
 
         if chat_id not in self._history:
@@ -391,7 +395,9 @@ class DialogueOrchestrator:
 
                 date_part = f" на {target_date}" if target_date else ""
                 time_part = f" в {target_time}" if target_time else ""
-                return Reply(f"Задача «{title}» успешно перенесена{date_part}{time_part}.")
+                label = "Напоминание" if record.get("is_reminder") else "Задача"
+                res_verb = "перенесено" if record.get("is_reminder") else "перенесена"
+                return Reply(f"{label} «{title}» успешно {res_verb}{date_part}{time_part}.")
 
         if action == AIAction.COMPLETE_RECORD:
             query = params.get("query")

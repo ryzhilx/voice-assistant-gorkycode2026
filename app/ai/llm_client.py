@@ -149,6 +149,37 @@ class LLMOrchestrator:
         return None
 
     @staticmethod
+    def _parse_relative_time(text: str, now: datetime.datetime) -> Optional[str]:
+        low = text.lower()
+        m_min = re.search(r"через\s+(\d+)\s*(?:минут|минуты|минуту|мин)\b", low)
+        if m_min:
+            new_dt = now + datetime.timedelta(minutes=int(m_min.group(1)))
+            return new_dt.strftime("%H:%M")
+
+        m_hr = re.search(r"через\s+(\d+)\s*(?:час|часа|часов)\b", low)
+        if m_hr:
+            new_dt = now + datetime.timedelta(hours=int(m_hr.group(1)))
+            return new_dt.strftime("%H:%M")
+
+        if "через полчаса" in low or "через пол-часа" in low:
+            new_dt = now + datetime.timedelta(minutes=30)
+            return new_dt.strftime("%H:%M")
+
+        if "через час" in low:
+            new_dt = now + datetime.timedelta(hours=1)
+            return new_dt.strftime("%H:%M")
+
+        if "через два часа" in low:
+            new_dt = now + datetime.timedelta(hours=2)
+            return new_dt.strftime("%H:%M")
+
+        if "через три часа" in low:
+            new_dt = now + datetime.timedelta(hours=3)
+            return new_dt.strftime("%H:%M")
+
+        return None
+
+    @staticmethod
     def _extract_recurrence(text: str) -> Optional[str]:
         low = text.lower()
         if re.search(r"\bпо\s+понедельникам\b|\bкаждый\s+понедельник\b", low):
@@ -555,7 +586,12 @@ class LLMOrchestrator:
                 }
             )
 
-        if any(w in low for w in ["перенеси", "перенесем", "перенести", "сдвинь", "отложи"]):
+        is_reschedule_verb = any(w in low for w in ["перенеси", "перенесем", "перенести", "сдвинь", "отложи", "переставь"])
+        is_correction = any(w in low for w in [
+            "а нет", "нет давай", "нет, давай", "давай лучше", "лучше через", "лучше в",
+            "давай через", "нет лучше", "нет, лучше", "позже на", "раньше на"
+        ])
+        if is_reschedule_verb or is_correction:
             target = "last"
             if "встреч" in low:
                 target = "meeting"
@@ -564,16 +600,17 @@ class LLMOrchestrator:
 
             parsed_date = self._extract_date(low)
             parsed_time = self._parse_time(low)
-            if not parsed_time and "через два часа" in low:
-                new_dt = now + datetime.timedelta(hours=2)
-                parsed_time = new_dt.strftime("%H:%M")
+            if not parsed_time:
+                parsed_time = self._parse_relative_time(low, now)
 
             clean_q = re.sub(
-                r"\b(а|и|но|да|давай|перенеси|перенесем|перенести|сдвинь|отложи|пожалуйста|мне|на|в|во|встречу|встреча|встречи|задачу|задача|задачи|ее|его|их|это|послезавтра|завтра|сегодня|понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье|через|два|три|час|часа|часов)\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[.:]\d{2}\b|\b\d{1,2}\b|[-?.,!]",
+                r"\b(а|и|но|да|нет|давай|лучше|перенеси|перенесем|перенести|сдвинь|отложи|переставь|пожалуйста|мне|на|в|во|встречу|встреча|встречи|задачу|задача|задачи|ее|его|их|это|послезавтра|завтра|сегодня|понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье|через|минут|минуты|минуту|мин|час|часа|часов|полчаса|два|три|позже|раньше)\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[.:]\d{2}\b|\b\d{1,2}\b|[-?.,!]",
                 " ",
                 low
             )
-            query_str = " ".join(clean_q.split()).strip()
+            query_str = " ".join(clean_q.split()).strip() or None
+            if is_correction and not any(w in low for w in ["встреч", "задач", "созвон"]):
+                query_str = None
 
             if not parsed_date and not parsed_time:
                 draft_d = {"action": "reschedule_record", "target": target}
@@ -643,9 +680,8 @@ class LLMOrchestrator:
         recurrence = self._extract_recurrence(low)
         parsed_date = self._extract_date(low)
         target_time = self._parse_time(low)
-        if not target_time and "через два часа" in low:
-            new_dt = now + datetime.timedelta(hours=2)
-            target_time = new_dt.strftime("%H:%M")
+        if not target_time:
+            target_time = self._parse_relative_time(low, now)
 
         if recurrence and not parsed_date:
             target_date = self._initial_recurring_date(recurrence, target_time)
@@ -707,9 +743,9 @@ class LLMOrchestrator:
                 }
             )
 
-        is_reminder = any(w in low for w in ["напомни", "напоминай"])
+        is_reminder = any(w in low for w in ["напомни", "напоминай", "напомнить"])
         clean_title = re.sub(
-            r"напоминай мне|напоминай|напомни мне|напомни|поставь задачу|нужно|надо|завтра|сегодня|послезавтра|до конца недели|в пятницу|в \d{1,2}(:\d{2})?(\s*утра|\s*вечера|\s*дня)?",
+            r"напоминай мне|напоминай|напомнить мне|напомнить|напомни мне|напомни|поставь задачу|нужно|надо|завтра|сегодня|послезавтра|до конца недели|в пятницу|в \d{1,2}(:\d{2})?(\s*утра|\s*вечера|\s*дня)?|через\s+\d+\s*(?:минут|минуты|минуту|мин|час|часа|часов)|через\s+(?:полчаса|пол-часа|час|два\s+часа|три\s+часа)",
             "",
             text,
             flags=re.IGNORECASE

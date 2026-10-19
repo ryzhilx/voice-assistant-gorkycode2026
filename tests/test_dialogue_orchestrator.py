@@ -277,7 +277,25 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(times["Встреча с инвестором"], "16:30")
         await orch.aclose()
 
+    async def test_reminder_relative_correction(self):
+        llm_real = LLMOrchestrator()
+        llm_real.yandex_api_key = None
+        llm_real.yandex_folder_id = None
+        orch = DialogueOrchestrator(llm=llm_real, db=self.db)
+
+        r1 = await orch.handle_text(CHAT, "напомнить позвонить через 5 минут")
+        self.assertIn("Напоминание", r1.text)
+        self.assertIn("Позвонить", r1.text)
+
+        r2 = await orch.handle_text(CHAT, "а нет, давай через 10 минут лучше")
+        self.assertIn("Напоминание", r2.text)
+        self.assertIn("перенесено", r2.text)
+        self.assertIn("Позвонить", r2.text)
+
+        await orch.aclose()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

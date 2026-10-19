@@ -210,30 +210,6 @@ class ToolCallingAgent:
 
         tool_calls, direct_reply = await self._call_llm(chat_id, message, tz_str)
 
-        if not tool_calls and not direct_reply:
-            low = message.strip().lower()
-            if low in ("архив", "покажи архив", "открой архив"):
-                tool = self.tools.get("get_archive")
-                if tool:
-                    res = await tool.execute(chat_id)
-                    self._record_turn(chat_id, message, res.output)
-                    return res.output
-            elif low in ("расписание", "планы", "что на сегодня", "на сегодня", "сегодня"):
-                tool = self.tools.get("get_schedule")
-                if tool:
-                    res = await tool.execute(chat_id)
-                    self._record_turn(chat_id, message, res.output)
-                    return res.output
-            elif low in ("задачи", "мои задачи", "список задач"):
-                tool = self.tools.get("get_schedule")
-                if tool:
-                    res = await tool.execute(chat_id, record_type="tasks")
-                    self._record_turn(chat_id, message, res.output)
-                    return res.output
-            elif low in ("помощь", "справка", "help"):
-                reply = "Я могу создавать напоминания и задачи, бронировать встречи в календаре, показывать расписание и архив."
-                self._record_turn(chat_id, message, reply)
-                return reply
 
         if tool_calls:
             results: List[ToolExecutionResult] = []

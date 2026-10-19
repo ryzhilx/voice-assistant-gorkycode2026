@@ -13,13 +13,14 @@ from aiogram.types import (
     InlineKeyboardButton,
 )
 
+from app.agent.agent import ToolCallingAgent
 from app.orchestrator.dialogue import DialogueOrchestrator
 from app.speech.speechkit import YandexSpeechKitService
 
 logger = logging.getLogger(__name__)
 
 router = Router()
-orchestrator = DialogueOrchestrator()
+orchestrator = DialogueOrchestrator(agent=ToolCallingAgent())
 stt = YandexSpeechKitService()
 
 

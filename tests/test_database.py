@@ -239,6 +239,66 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
         s_mon = await self.db.get_schedule(user_id=26, start_date="2026-10-26", end_date="2026-10-26")
         self.assertEqual(len(s_mon["meetings"]), 0)
 
+    async def test_conflict_detection_ignores_archived(self):
+        mid = await self.db.add_meeting(
+            user_id=30,
+            title="Старая встреча",
+            start_date="2026-10-18",
+            start_time="11:00",
+            duration_minutes=60
+        )
+        await self.db.archive_past_records(user_id=30, current_date="2026-10-19", current_time="10:00")
+        conflict = await self.db.check_meeting_conflict(user_id=30, start_date="2026-10-18", start_time="11:00")
+        self.assertIsNone(conflict)
+
+    async def test_conflict_detection_interval_overlap(self):
+        await self.db.add_meeting(
+            user_id=31,
+            title="Встреча 1",
+            start_date="2026-10-20",
+            start_time="14:00",
+            duration_minutes=60
+        )
+        c1 = await self.db.check_meeting_conflict(user_id=31, start_date="2026-10-20", start_time="14:30", duration_minutes=60)
+        self.assertIsNotNone(c1)
+        self.assertEqual(c1["title"], "Встреча 1")
+
+        c2 = await self.db.check_meeting_conflict(user_id=31, start_date="2026-10-20", start_time="15:00", duration_minutes=60)
+        self.assertIsNone(c2)
+
+    async def test_mark_task_completed_overdue_advances_to_current(self):
+        tid = await self.db.add_task(
+            user_id=32,
+            title="Ежедневная зарядка",
+            due_date="2026-10-10",
+            recurrence="daily"
+        )
+        await self.db.set_user_timezone(32, "Europe/Moscow")
+        ok = await self.db.mark_task_completed(user_id=32, task_id=tid)
+        self.assertTrue(ok)
+        row = self.db._get_connection().execute("SELECT due_date FROM tasks WHERE id = ?", (tid,)).fetchone()
+        import datetime
+        from zoneinfo import ZoneInfo
+        today_str = datetime.datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()
+        self.assertGreaterEqual(row["due_date"], today_str)
+
+    async def test_meeting_duration_not_archived_until_finished(self):
+        mid = await self.db.add_meeting(
+            user_id=33,
+            title="Длинная встреча",
+            start_date="2099-10-19",
+            start_time="16:00",
+            duration_minutes=60
+        )
+        await self.db.mark_meeting_reminder_sent(mid)
+        await self.db.archive_past_records(user_id=33, current_date="2099-10-19", current_time="16:30")
+        s = await self.db.get_schedule(user_id=33, start_date="2099-10-19", end_date="2099-10-19")
+        self.assertEqual(len(s["meetings"]), 1)
+
+        await self.db.archive_past_records(user_id=33, current_date="2099-10-19", current_time="17:05")
+        s2 = await self.db.get_schedule(user_id=33, start_date="2099-10-19", end_date="2099-10-19")
+        self.assertEqual(len(s2["meetings"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

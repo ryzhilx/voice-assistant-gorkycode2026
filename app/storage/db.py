@@ -309,32 +309,55 @@ class Database:
         start_date: str,
         start_time: str,
         exclude_id: Optional[int] = None,
-        recurrence: Optional[str] = None
+        recurrence: Optional[str] = None,
+        duration_minutes: int = 60
     ) -> Optional[Dict[str, Any]]:
         def _check():
             conn = self._get_connection()
             try:
+                dur = duration_minutes or 60
+                n_h, n_m = map(int, start_time.split(":", 1))
+                n_start = n_h * 60 + n_m
+                n_end = n_start + dur
+
                 query = """
-                    SELECT id, title, start_date, start_time, recurrence
+                    SELECT id, title, start_date, start_time, duration_minutes, recurrence
                     FROM meetings
-                    WHERE user_id = ? AND (recurrence IS NULL OR recurrence = '') AND start_date = ? AND start_time = ?
+                    WHERE user_id = ? AND (recurrence IS NULL OR recurrence = '') AND start_date = ? AND status != 'archived'
                 """
-                params = [user_id, start_date, start_time]
+                params = [user_id, start_date]
                 if exclude_id is not None:
                     query += " AND id != ?"
                     params.append(exclude_id)
-                query += " LIMIT 1"
-                row = conn.execute(query, tuple(params)).fetchone()
-                if row:
-                    return dict(row)
+                rows = conn.execute(query, tuple(params)).fetchall()
+
+                exact_match = None
+                overlap_match = None
+                for row in rows:
+                    c_h, c_m = map(int, row["start_time"].split(":", 1))
+                    c_dur = row["duration_minutes"] or 60
+                    c_start = c_h * 60 + c_m
+                    c_end = c_start + c_dur
+
+                    if row["start_time"] == start_time:
+                        exact_match = dict(row)
+                        break
+                    if n_start < c_end and n_end > c_start:
+                        if not overlap_match:
+                            overlap_match = dict(row)
+
+                if exact_match:
+                    return exact_match
+                if overlap_match:
+                    return overlap_match
 
                 rec_query = """
-                    SELECT id, title, start_date, start_time, recurrence,
+                    SELECT id, title, start_date, start_time, duration_minutes, recurrence,
                            COALESCE(base_date, start_date, date(created_at)) as base_date
                     FROM meetings
-                    WHERE user_id = ? AND recurrence IS NOT NULL AND recurrence != '' AND start_time = ? AND status != 'archived'
+                    WHERE user_id = ? AND recurrence IS NOT NULL AND recurrence != '' AND status != 'archived'
                 """
-                rec_params = [user_id, start_time]
+                rec_params = [user_id]
                 if exclude_id is not None:
                     rec_query += " AND id != ?"
                     rec_params.append(exclude_id)
@@ -345,26 +368,48 @@ class Database:
                     target_dt = datetime.date.fromisoformat(start_date)
 
                 if rec_rows and target_dt:
+                    rec_exact = None
+                    rec_overlap = None
                     for r in rec_rows:
                         base_d = datetime.date.fromisoformat(r["base_date"]) if r["base_date"] else None
                         if self.matches_recurrence(target_dt, base_d, r["recurrence"]):
-                            return dict(r)
+                            c_h, c_m = map(int, r["start_time"].split(":", 1))
+                            c_dur = r["duration_minutes"] or 60
+                            c_start = c_h * 60 + c_m
+                            c_end = c_start + c_dur
+                            if r["start_time"] == start_time:
+                                rec_exact = dict(r)
+                                break
+                            if n_start < c_end and n_end > c_start:
+                                if not rec_overlap:
+                                    rec_overlap = dict(r)
+                    if rec_exact:
+                        return rec_exact
+                    if rec_overlap:
+                        return rec_overlap
 
                 if recurrence and target_dt:
                     all_meetings = conn.execute(
                         """
-                        SELECT id, title, start_date, start_time, recurrence,
+                        SELECT id, title, start_date, start_time, duration_minutes, recurrence,
                                COALESCE(base_date, start_date, date(created_at)) as base_date
                         FROM meetings
-                        WHERE user_id = ? AND start_time = ? AND status != 'archived'
+                        WHERE user_id = ? AND status != 'archived'
                         """,
-                        (user_id, start_time)
+                        (user_id,)
                     ).fetchall()
                     import datetime
                     for m in all_meetings:
                         if exclude_id is not None and m["id"] == exclude_id:
                             continue
                         m_rec = m["recurrence"]
+                        c_h, c_m = map(int, m["start_time"].split(":", 1))
+                        c_dur = m["duration_minutes"] or 60
+                        c_start = c_h * 60 + c_m
+                        c_end = c_start + c_dur
+                        if not (n_start < c_end and n_end > c_start):
+                            continue
+
                         if m_rec:
                             m_base = datetime.date.fromisoformat(m["base_date"]) if m["base_date"] else None
                             check_day = max(target_dt, m_base) if m_base else target_dt
@@ -400,7 +445,7 @@ class Database:
                   AND (recurrence IS NULL OR recurrence = '')
                   AND (
                       start_date < ?
-                      OR (start_date = ? AND start_time <= ? AND reminder_sent = 1)
+                      OR (start_date = ? AND time(start_time, '+' || COALESCE(duration_minutes, 60) || ' minutes') <= time(?))
                   )
                 """,
                 (uid, c_date, c_date, c_time)
@@ -433,11 +478,10 @@ class Database:
                   AND (recurrence IS NULL OR recurrence = '')
                   AND (
                       due_date < ?
-                      OR (due_date = ? AND (due_time IS NOT NULL AND due_time <= ?))
                       OR due_date IS NULL
                   )
                 """,
-                (uid, c_date, c_date, c_time)
+                (uid, c_date)
             )
             count += cur3.rowcount
             return count
@@ -514,7 +558,7 @@ class Database:
                 now_dt = datetime.datetime.now()
             today_str = now_dt.strftime("%Y-%m-%d")
             c_d = min(today_str, start_date)
-            c_t = now_dt.strftime("%H:%M") if c_d == today_str else "00:00"
+            c_t = now_dt.strftime("%H:%M") if c_d == today_str else "23:59"
             await self.archive_past_records(user_id=user_id, current_date=c_d, current_time=c_t)
 
         def _query():
@@ -736,10 +780,19 @@ class Database:
 
                     if row["recurrence"]:
                         import datetime
-                        today_str = datetime.date.today().isoformat()
+                        tz_row = conn.execute("SELECT timezone FROM users WHERE user_id = ?", (user_id,)).fetchone()
+                        tz_str = tz_row["timezone"] if tz_row and tz_row["timezone"] else "Europe/Moscow"
+                        try:
+                            from zoneinfo import ZoneInfo
+                            today_str = datetime.datetime.now(ZoneInfo(tz_str)).date().isoformat()
+                        except Exception:
+                            today_str = datetime.date.today().isoformat()
+
                         due = row["due_date"] or today_str
                         if due < today_str:
                             next_date = self.calculate_next_occurrence(due, row["recurrence"])
+                            while next_date < today_str:
+                                next_date = self.calculate_next_occurrence(next_date, row["recurrence"])
                             cur = conn.execute(
                                 """
                                 UPDATE tasks
@@ -935,12 +988,11 @@ class Database:
                     conn.close()
         return await asyncio.to_thread(_upd)
 
-    async def get_due_tasks(self, current_date: str, current_time: str) -> List[Dict[str, Any]]:
+    async def get_due_tasks(self, current_date: Optional[str] = None, current_time: Optional[str] = None) -> List[Dict[str, Any]]:
         def _query():
             conn = self._get_connection()
             try:
-                rows = conn.execute(
-                    """
+                base_sql = """
                     SELECT t.id, t.user_id, t.title, t.due_date, t.due_time, t.is_reminder, t.recurrence,
                            COALESCE(u.timezone, 'Europe/Moscow') as timezone
                     FROM tasks t
@@ -949,14 +1001,17 @@ class Database:
                       AND t.reminder_sent = 0
                       AND t.due_date IS NOT NULL
                       AND t.due_time IS NOT NULL
+                """
+                if current_date and current_time:
+                    base_sql += """
                       AND (
                           (t.due_date = ? AND t.due_time <= ?)
                           OR (t.due_date < ?)
                       )
-                    ORDER BY t.due_date ASC, t.due_time ASC
-                    """,
-                    (current_date, current_time, current_date)
-                ).fetchall()
+                    """
+                    rows = conn.execute(base_sql + " ORDER BY t.due_date ASC, t.due_time ASC", (current_date, current_time, current_date)).fetchall()
+                else:
+                    rows = conn.execute(base_sql + " ORDER BY t.due_date ASC, t.due_time ASC").fetchall()
                 return [dict(r) for r in rows]
             finally:
                 if not self._is_memory:
@@ -978,12 +1033,11 @@ class Database:
                     conn.close()
         return await asyncio.to_thread(_update)
 
-    async def get_due_meetings(self, current_date: str, current_time: str) -> List[Dict[str, Any]]:
+    async def get_due_meetings(self, current_date: Optional[str] = None, current_time: Optional[str] = None) -> List[Dict[str, Any]]:
         def _query():
             conn = self._get_connection()
             try:
-                rows = conn.execute(
-                    """
+                base_sql = """
                     SELECT m.id, m.user_id, m.title, m.start_date, m.start_time, m.duration_minutes, m.participants, m.recurrence,
                            COALESCE(u.timezone, 'Europe/Moscow') as timezone
                     FROM meetings m
@@ -992,14 +1046,17 @@ class Database:
                       AND m.status != 'archived'
                       AND m.start_date IS NOT NULL
                       AND m.start_time IS NOT NULL
+                """
+                if current_date and current_time:
+                    base_sql += """
                       AND (
                           (m.start_date = ? AND m.start_time <= ?)
                           OR (m.start_date < ?)
                       )
-                    ORDER BY m.start_date ASC, m.start_time ASC
-                    """,
-                    (current_date, current_time, current_date)
-                ).fetchall()
+                    """
+                    rows = conn.execute(base_sql + " ORDER BY m.start_date ASC, m.start_time ASC", (current_date, current_time, current_date)).fetchall()
+                else:
+                    rows = conn.execute(base_sql + " ORDER BY m.start_date ASC, m.start_time ASC").fetchall()
                 return [dict(r) for r in rows]
             finally:
                 if not self._is_memory:
@@ -1012,7 +1069,7 @@ class Database:
             try:
                 with conn:
                     cur = conn.execute(
-                        "UPDATE meetings SET reminder_sent = 1, status = 'archived' WHERE id = ?",
+                        "UPDATE meetings SET reminder_sent = 1 WHERE id = ?",
                         (meeting_id,)
                     )
                     return cur.rowcount > 0

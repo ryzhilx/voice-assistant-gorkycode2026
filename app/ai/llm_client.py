@@ -197,7 +197,7 @@ class LLMOrchestrator:
                 pass
 
         if recurrence == "daily":
-            return today + datetime.timedelta(days=1) if time_passed else today
+            return today
 
         if recurrence == "weekdays":
             cand = today + datetime.timedelta(days=1) if time_passed else today
@@ -568,23 +568,36 @@ class LLMOrchestrator:
                 new_dt = now + datetime.timedelta(hours=2)
                 parsed_time = new_dt.strftime("%H:%M")
 
+            clean_q = re.sub(
+                r"\b(а|и|но|да|давай|перенеси|перенесем|перенести|сдвинь|отложи|пожалуйста|мне|на|в|во|встречу|встреча|встречи|задачу|задача|задачи|ее|его|их|это|послезавтра|завтра|сегодня|понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье|через|два|три|час|часа|часов)\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[.:]\d{2}\b|\b\d{1,2}\b|[-?.,!]",
+                " ",
+                low
+            )
+            query_str = " ".join(clean_q.split()).strip()
+
             if not parsed_date and not parsed_time:
+                draft_d = {"action": "reschedule_record", "target": target}
+                if query_str:
+                    draft_d["query"] = query_str
                 return AIResponse(
                     action=AIAction.ASK_CLARIFICATION,
                     params={
                         "missing_slot": "time",
                         "question": "На какую дату или время перенести?",
-                        "draft_data": {"action": "reschedule_record", "target": target}
+                        "draft_data": draft_d
                     }
                 )
 
+            params = {
+                "target": target,
+                "new_date": str(parsed_date) if parsed_date else None,
+                "new_time": parsed_time
+            }
+            if query_str:
+                params["query"] = query_str
             return AIResponse(
                 action=AIAction.RESCHEDULE_RECORD,
-                params={
-                    "target": target,
-                    "new_date": str(parsed_date) if parsed_date else None,
-                    "new_time": parsed_time
-                }
+                params=params
             )
 
         completion_verbs = [

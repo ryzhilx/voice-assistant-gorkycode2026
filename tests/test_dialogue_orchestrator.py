@@ -257,6 +257,26 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[x] Позвонить Ивану", r3.text)
         await orch.aclose()
 
+    async def test_reschedule_with_specific_query(self):
+        llm_real = LLMOrchestrator()
+        llm_real.yandex_api_key = None
+        llm_real.yandex_folder_id = None
+        orch = DialogueOrchestrator(llm=llm_real, db=self.db)
+
+        test_date = "2099-11-20"
+        m1 = await self.db.add_meeting(CHAT, "Встреча с инвестором", start_date=test_date, start_time="16:30")
+        m2 = await self.db.add_meeting(CHAT, "Встреча с дизайнером", start_date=test_date, start_time="16:30")
+
+        r = await orch.handle_text(CHAT, "Перенеси встречу с дизайнером на 20:00")
+        self.assertIn("успешно перенесена", r.text.lower())
+        self.assertIn("дизайнером", r.text.lower())
+
+        s = await self.db.get_schedule(CHAT, test_date, test_date, filter_type="meetings")
+        times = {m["title"]: m["start_time"] for m in s["meetings"]}
+        self.assertEqual(times["Встреча с дизайнером"], "20:00")
+        self.assertEqual(times["Встреча с инвестором"], "16:30")
+        await orch.aclose()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -309,19 +309,34 @@ class DialogueOrchestrator:
             target = params.get("target", "last")
             new_date = params.get("new_date")
             new_time = params.get("new_time")
+            query = params.get("query")
 
             if not new_date and not new_time:
+                draft_d = {"action": "reschedule_record", "target": target}
+                if query:
+                    draft_d["query"] = query
                 self._pending[chat_id] = PendingClarification(
                     slot="time",
-                    draft={"action": "reschedule_record", "target": target}
+                    draft=draft_d
                 )
                 return Reply("На какую дату или время перенести?")
 
-            record = self._last_event.get(chat_id)
-            if not record or (target in ("meeting", "task") and record.get("type") != target):
-                db_record = await self.db.get_latest_record(chat_id, target)
-                if db_record:
-                    record = db_record
+            record = None
+            if query:
+                records = await self.db.get_all_records_for_search(chat_id, target if target in ("meeting", "task") else "all")
+                if records:
+                    active_recs = [r for r in records if r.get("status") not in ("completed", "archived")]
+                    cands = active_recs if active_recs else records
+                    matches = self.search_engine.rank_records(query, cands, top_k=1)
+                    if matches:
+                        record = matches[0]
+
+            if not record:
+                record = self._last_event.get(chat_id)
+                if not record or (target in ("meeting", "task") and record.get("type") != target):
+                    db_record = await self.db.get_latest_record(chat_id, target)
+                    if db_record:
+                        record = db_record
 
             if not record:
                 return Reply("Не удалось найти предыдущую запись для переноса. Уточните, какую именно встречу или задачу вы хотите перенести.")

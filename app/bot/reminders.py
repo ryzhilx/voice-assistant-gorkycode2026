@@ -15,18 +15,20 @@ logger = logging.getLogger(__name__)
 async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetime.datetime] = None) -> int:
     if now is not None:
         current_dt = now
+        current_date = current_dt.strftime("%Y-%m-%d")
+        current_time = current_dt.strftime("%H:%M")
+        due_tasks = await db.get_due_tasks(current_date, current_time)
+        due_meetings = await db.get_due_meetings(current_date, current_time)
     else:
         try:
             from zoneinfo import ZoneInfo
             current_dt = datetime.datetime.now(ZoneInfo("Europe/Moscow"))
         except Exception:
             current_dt = datetime.datetime.now()
-
-    current_date = current_dt.strftime("%Y-%m-%d")
-    current_time = current_dt.strftime("%H:%M")
-
-    due_tasks = await db.get_due_tasks(current_date, current_time)
-    due_meetings = await db.get_due_meetings(current_date, current_time)
+        current_date = current_dt.strftime("%Y-%m-%d")
+        current_time = current_dt.strftime("%H:%M")
+        due_tasks = await db.get_due_tasks()
+        due_meetings = await db.get_due_meetings()
 
     count = 0
 

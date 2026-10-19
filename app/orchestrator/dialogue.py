@@ -7,10 +7,9 @@ from app.ai.llm_client import LLMOrchestrator
 from app.ai.schemas import AIAction, AIResponse
 from app.config import settings
 from app.orchestrator.context import DEFAULT_QUESTION, HandlerContext, PendingClarification, Reply
-from app.orchestrator.formatters import format_recurrence
+from app.orchestrator.formatters import format_archive_view, format_recurrence
 from app.orchestrator.handlers import get_default_handlers
 from app.orchestrator.handlers.base import BaseActionHandler
-from app.orchestrator.handlers.schedule import format_archive_view
 from app.storage.db import Database
 
 logger = logging.getLogger(__name__)
@@ -28,7 +27,10 @@ class DialogueOrchestrator:
         self.db = db or Database(settings.database_path)
         self.search_engine = search_engine or SemanticSearchEngine()
         self.handlers: Dict[AIAction, BaseActionHandler] = handlers or get_default_handlers()
-        self.agent: Optional[ToolCallingAgent] = agent
+        if agent is None and llm is None:
+            self.agent = ToolCallingAgent(db=self.db, search_engine=self.search_engine, llm=self.llm)
+        else:
+            self.agent = agent
         self._pending: Dict[int, PendingClarification] = {}
         self._history: Dict[int, List[Dict[str, str]]] = {}
         self._last_event: Dict[int, Dict[str, Any]] = {}

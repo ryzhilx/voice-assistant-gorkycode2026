@@ -2,8 +2,7 @@ import datetime
 from typing import Any, Dict, List
 from app.agent.schemas import ToolDefinition, ToolExecutionResult, ToolParameter
 from app.agent.tools.base import BaseTool
-from app.orchestrator.formatters import format_recurrence
-from app.orchestrator.handlers.schedule import format_archive_view
+from app.orchestrator.formatters import format_recurrence, format_archive_view
 
 class GetScheduleTool(BaseTool):
     @property

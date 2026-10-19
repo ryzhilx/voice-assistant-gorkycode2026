@@ -1,5 +1,6 @@
 import datetime
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, List
 
@@ -61,7 +62,7 @@ class DialogueOrchestrator:
         context = {"awaiting_slot": pending.slot, "draft_data": pending.draft} if pending else None
 
         result = await self.llm.parse_intent(text, context)
-        reply = await self._dispatch(chat_id, result)
+        reply = await self._dispatch(chat_id, result, raw_text=text)
 
         if chat_id not in self._history:
             self._history[chat_id] = []
@@ -72,7 +73,7 @@ class DialogueOrchestrator:
 
         return reply
 
-    async def _dispatch(self, chat_id: int, result: AIResponse) -> Reply:
+    async def _dispatch(self, chat_id: int, result: AIResponse, raw_text: Optional[str] = None) -> Reply:
         if result.action == AIAction.ASK_CLARIFICATION:
             prev_draft = self._pending[chat_id].draft if chat_id in self._pending else {}
             new_draft = {**prev_draft, **result.params.get("draft_data", {})}
@@ -89,11 +90,11 @@ class DialogueOrchestrator:
             sub_actions = result.sub_actions or []
             replies = []
             for idx, sub in enumerate(sub_actions, 1):
-                sub_reply = await self._execute_single_action(chat_id, sub.action, sub.params, sub.user_reply)
+                sub_reply = await self._execute_single_action(chat_id, sub.action, sub.params, sub.user_reply, raw_text=raw_text)
                 replies.append(f"{idx}️⃣ {sub_reply.text}")
             return Reply("\n\n".join(replies))
 
-        return await self._execute_single_action(chat_id, result.action, result.params, result.user_reply)
+        return await self._execute_single_action(chat_id, result.action, result.params, result.user_reply, raw_text=raw_text)
 
     @staticmethod
     def _format_recurrence(recurrence: Optional[str]) -> str:
@@ -120,9 +121,21 @@ class DialogueOrchestrator:
         chat_id: int,
         action: AIAction,
         params: Dict[str, Any],
-        user_reply: Optional[str] = None
+        user_reply: Optional[str] = None,
+        raw_text: Optional[str] = None
     ) -> Reply:
         if action == AIAction.CHAT:
+            if raw_text:
+                low = raw_text.lower().strip()
+                past_pattern = r"^(?:я\s+)?(выпил|выпила|попил|попила|позвонил|позвонила|набрал|набрала|купил|купила|сделал|сделала|выполнил|выполнила|отправил|отправила|принял|приняла|сходил|сходила|пошел|пошла|забрал|забрала|оплатил|оплатила|закрыл|закрыла|полил|полила|съел|съела|поел|поела|прочитал|прочитала|сдал|сдала|закончил|закончила|написал|написала|перевел|перевела|решил|решила)\b"
+                if re.search(past_pattern, low):
+                    records = await self.db.get_all_records_for_search(chat_id, "tasks")
+                    pending = [r for r in records if r.get("status") not in ("completed", "archived")]
+                    if pending:
+                        matches = self.search_engine.rank_records(raw_text, pending, top_k=1)
+                        if matches:
+                            return await self._execute_single_action(chat_id, AIAction.COMPLETE_RECORD, {"target": "task", "query": raw_text}, raw_text=raw_text)
+
             reply_text = params.get("reply") or user_reply or "Чем я могу вам помочь?"
             return Reply(reply_text)
 
@@ -371,7 +384,9 @@ class DialogueOrchestrator:
             if query:
                 records = await self.db.get_all_records_for_search(chat_id, "tasks")
                 if records:
-                    matches = self.search_engine.rank_records(query, records, top_k=1)
+                    pending_records = [r for r in records if r.get("status") not in ("completed", "archived")]
+                    candidates = pending_records if pending_records else records
+                    matches = self.search_engine.rank_records(query, candidates, top_k=1)
                     if matches:
                         record = matches[0]
 

@@ -1,3 +1,5 @@
+import datetime
+from zoneinfo import ZoneInfo
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -232,6 +234,28 @@ class TestDialogueOrchestrator(unittest.IsolatedAsyncioTestCase):
         view_tasks = await self.orch.get_archive_view(CHAT, filter_type="tasks")
         self.assertIn("Подготовить отчет", view_tasks)
         self.assertNotIn("Ретроспектива", view_tasks)
+
+    async def test_past_tense_action_reports_complete_tasks(self):
+        llm_real = LLMOrchestrator()
+        llm_real.yandex_api_key = None
+        llm_real.yandex_folder_id = None
+        orch = DialogueOrchestrator(llm=llm_real, db=self.db)
+
+        today_str = str(datetime.datetime.now(ZoneInfo(llm_real._current_timezone)).date())
+        await self.db.add_task(CHAT, "Пить воду до 10:00 каждый день", due_date=today_str, recurrence="daily")
+        await self.db.add_task(CHAT, "Позвонить Ивану", due_date=today_str, due_time="10:00")
+
+        r1 = await orch.handle_text(CHAT, "я выпил воды")
+        self.assertIn("выполнена", r1.text.lower())
+        self.assertIn("пить воду", r1.text.lower())
+
+        r2 = await orch.handle_text(CHAT, "я позвонил ивану")
+        self.assertIn("выполнен", r2.text.lower())
+        self.assertIn("позвонить ивану", r2.text.lower())
+
+        r3 = await orch.handle_text(CHAT, "расписание")
+        self.assertIn("[x] Позвонить Ивану", r3.text)
+        await orch.aclose()
 
 
 if __name__ == "__main__":

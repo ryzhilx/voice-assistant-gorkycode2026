@@ -1,38 +1,31 @@
-import datetime
 import logging
-import re
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List, Optional
 
-from app.ai.llm_client import LLMOrchestrator
 from app.ai.embeddings import SemanticSearchEngine
+from app.ai.llm_client import LLMOrchestrator
 from app.ai.schemas import AIAction, AIResponse
-from app.storage.db import Database
 from app.config import settings
+from app.orchestrator.context import DEFAULT_QUESTION, HandlerContext, PendingClarification, Reply
+from app.orchestrator.formatters import format_recurrence
+from app.orchestrator.handlers import get_default_handlers
+from app.orchestrator.handlers.base import BaseActionHandler
+from app.orchestrator.handlers.schedule import format_archive_view
+from app.storage.db import Database
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_QUESTION = "Уточните, пожалуйста."
-
-@dataclass
-class Reply:
-    text: str
-
-@dataclass
-class PendingClarification:
-    slot: Optional[str]
-    draft: Dict[str, Any]
 
 class DialogueOrchestrator:
     def __init__(
         self,
         llm: Optional[LLMOrchestrator] = None,
         db: Optional[Database] = None,
-        search_engine: Optional[SemanticSearchEngine] = None
+        search_engine: Optional[SemanticSearchEngine] = None,
+        handlers: Optional[Dict[AIAction, BaseActionHandler]] = None
     ):
         self.llm = llm or LLMOrchestrator()
         self.db = db or Database(settings.database_path)
         self.search_engine = search_engine or SemanticSearchEngine()
+        self.handlers: Dict[AIAction, BaseActionHandler] = handlers or get_default_handlers()
         self._pending: Dict[int, PendingClarification] = {}
         self._history: Dict[int, List[Dict[str, str]]] = {}
         self._last_event: Dict[int, Dict[str, Any]] = {}
@@ -85,8 +78,7 @@ class DialogueOrchestrator:
                 slot=result.params.get("missing_slot"),
                 draft=new_draft,
             )
-            reply = Reply(result.params.get("question", DEFAULT_QUESTION))
-            return reply
+            return Reply(result.params.get("question", DEFAULT_QUESTION))
 
         self.reset(chat_id)
 
@@ -100,26 +92,6 @@ class DialogueOrchestrator:
 
         return await self._execute_single_action(chat_id, result.action, result.params, result.user_reply, raw_text=raw_text)
 
-    @staticmethod
-    def _format_recurrence(recurrence: Optional[str]) -> str:
-        if not recurrence:
-            return ""
-        mapping = {
-            "daily": "ежедневно",
-            "weekdays": "по будням",
-            "weekends": "по выходным",
-            "weekly": "еженедельно",
-            "weekly:mon": "каждый понедельник",
-            "weekly:tue": "каждый вторник",
-            "weekly:wed": "каждую среду",
-            "weekly:thu": "каждый четверг",
-            "weekly:fri": "каждую пятницу",
-            "weekly:sat": "каждую субботу",
-            "weekly:sun": "каждое воскресенье",
-            "monthly": "ежемесячно"
-        }
-        return mapping.get(recurrence, recurrence)
-
     async def _execute_single_action(
         self,
         chat_id: int,
@@ -128,427 +100,26 @@ class DialogueOrchestrator:
         user_reply: Optional[str] = None,
         raw_text: Optional[str] = None
     ) -> Reply:
-        if action == AIAction.CHAT:
-            if raw_text:
-                low = raw_text.lower().strip()
-                past_pattern = r"^(?:я\s+)?(выпил|выпила|попил|попила|позвонил|позвонила|набрал|набрала|купил|купила|сделал|сделала|выполнил|выполнила|отправил|отправила|принял|приняла|сходил|сходила|пошел|пошла|забрал|забрала|оплатил|оплатила|закрыл|закрыла|полил|полила|съел|съела|поел|поела|прочитал|прочитала|сдал|сдала|закончил|закончила|написал|написала|перевел|перевела|решил|решила)\b"
-                if re.search(past_pattern, low):
-                    records = await self.db.get_all_records_for_search(chat_id, "tasks")
-                    pending = [r for r in records if r.get("status") not in ("completed", "archived")]
-                    if pending:
-                        matches = self.search_engine.rank_records(raw_text, pending, top_k=1)
-                        if matches:
-                            return await self._execute_single_action(chat_id, AIAction.COMPLETE_RECORD, {"target": "task", "query": raw_text}, raw_text=raw_text)
+        handler = self.handlers.get(action)
+        if not handler:
+            logger.info("Unknown action=%s params=%s", action.value, params)
+            return Reply("Запрос принят, но действие не определено.")
 
-            reply_text = params.get("reply") or user_reply or "Чем я могу вам помочь?"
-            return Reply(reply_text)
-
-        if action == AIAction.CREATE_TASK:
-            title = params.get("title", "Задача")
-            due_date = params.get("due_date")
-            due_time = params.get("due_time")
-            is_reminder = bool(params.get("is_reminder", False))
-            recurrence = params.get("recurrence")
-
-            task_id = await self.db.add_task(
-                user_id=chat_id,
-                title=title,
-                due_date=due_date,
-                due_time=due_time,
-                is_reminder=is_reminder,
-                recurrence=recurrence
-            )
-            self._last_event[chat_id] = {
-                "id": task_id,
-                "title": title,
-                "date": due_date,
-                "time": due_time,
-                "type": "task",
-                "is_reminder": is_reminder,
-                "recurrence": recurrence
-            }
-
-            date_info = f" на {due_date}" if due_date else ""
-            time_info = f" в {due_time}" if due_time else ""
-            rec_badge = f" (🔄 {self._format_recurrence(recurrence)})" if recurrence else ""
-            prefix = "Напоминание установлено" if is_reminder else "Задача добавлена"
-            if title.strip().lower() in ["задача", "напоминание", "task"]:
-                return Reply(f"{prefix}{date_info}{time_info}{rec_badge}.")
-            return Reply(f"{prefix}: «{title}»{date_info}{time_info}{rec_badge}.")
-
-        if action == AIAction.CREATE_MEETING:
-            title = params.get("title", "Встреча")
-            start_date = params.get("start_date")
-            start_time = params.get("start_time")
-            duration = int(params.get("duration_minutes", 60))
-            participants = params.get("participants")
-            recurrence = params.get("recurrence")
-
-            conflict = await self.db.check_meeting_conflict(chat_id, start_date, start_time, recurrence=recurrence)
-            meeting_id = await self.db.add_meeting(
-                user_id=chat_id,
-                title=title,
-                start_date=start_date,
-                start_time=start_time,
-                duration_minutes=duration,
-                participants=participants,
-                recurrence=recurrence
-            )
-            self._last_event[chat_id] = {
-                "id": meeting_id,
-                "title": title,
-                "date": start_date,
-                "time": start_time,
-                "type": "meeting",
-                "recurrence": recurrence
-            }
-
-            rec_badge = f" (🔄 {self._format_recurrence(recurrence)})" if recurrence else ""
-            if title.strip().lower() in ["встреча", "созвон", "meeting"]:
-                response_text = f"Встреча назначена на {start_date} в {start_time}{rec_badge}."
-            else:
-                response_text = f"Встреча «{title}» назначена на {start_date} в {start_time}{rec_badge}."
-            if conflict:
-                response_text += f"\nВнимание: в это же время уже стоит «{conflict.get('title')}»."
-            return Reply(response_text)
-
-        if action == AIAction.GET_SCHEDULE:
-            tz_str = await self.db.get_user_timezone(chat_id)
-            try:
-                from zoneinfo import ZoneInfo
-                now_date = datetime.datetime.now(ZoneInfo(tz_str)).date()
-            except Exception:
-                now_date = datetime.datetime.now().date()
-            now_str = str(now_date)
-            start_date = params.get("start_date") or now_str
-            end_date = params.get("end_date") or start_date
-            filter_type = params.get("filter_type", "all")
-
-            data = await self.db.get_schedule(chat_id, start_date, end_date, filter_type)
-            tasks = data.get("tasks", [])
-            meetings = data.get("meetings", [])
-
-            if not tasks and not meetings:
-                if start_date == now_str and end_date == now_str:
-                    period_text = f"сегодня ({start_date})"
-                elif start_date == end_date:
-                    period_text = start_date
-                else:
-                    period_text = f"период с {start_date} по {end_date}"
-
-                target = "нет активных встреч и задач (прошедшие события перемещены в архив)"
-                if filter_type == "meetings":
-                    target = "нет запланированных встреч"
-                elif filter_type == "tasks":
-                    target = "нет активных задач"
-
-                return Reply(f"На {period_text} {target}.")
-
-            lines: List[str] = []
-            if start_date == now_str and end_date == now_str:
-                period_str = f"сегодня, {start_date}"
-            elif start_date == end_date:
-                period_str = start_date
-            else:
-                period_str = f"{start_date} — {end_date}"
-            lines.append(f"Расписание ({period_str}):")
-
-            if meetings:
-                lines.append("\nВстречи:")
-                for m in meetings:
-                    t = m.get("start_time") or ""
-                    title = m.get("title")
-                    rec_badge = f" (🔄 {self._format_recurrence(m.get('recurrence'))})" if m.get("recurrence") else ""
-                    lines.append(f"- {t} {title}{rec_badge}")
-
-            if tasks:
-                lines.append("\nЗадачи:")
-                for t in tasks:
-                    status = "[x]" if t.get("status") == "completed" else "[ ]"
-                    tm = f" (до {t.get('due_time')})" if t.get("due_time") else ""
-                    rec_badge = f" (🔄 {self._format_recurrence(t.get('recurrence'))})" if t.get("recurrence") else ""
-                    lines.append(f"{status} {t.get('title')}{tm}{rec_badge}")
-
-            return Reply("\n".join(lines))
-
-        if action == AIAction.GET_ARCHIVE or (action == AIAction.GET_SCHEDULE and params.get("filter_type") == "archive"):
-            f_type = params.get("filter_type", "all")
-            if f_type == "archive":
-                f_type = "all"
-            text_view = await self.get_archive_view(chat_id, filter_type=f_type)
-            return Reply(text_view)
-
-        if action == AIAction.SEARCH_RECORDS:
-            query = params.get("query", "").strip()
-            record_type = params.get("record_type", "all")
-
-            records = await self.db.get_all_records_for_search(chat_id, record_type)
-            if not records:
-                return Reply(f"По запросу «{query}» ничего не найдено.")
-
-            matches = self.search_engine.rank_records(query, records, top_k=3)
-            if not matches:
-                return Reply(f"По запросу «{query}» ничего не найдено.")
-
-            lines = [f"Найдено по запросу «{query}»:"]
-            for m in matches:
-                kind = "Встреча" if m.get("type") == "meeting" else "Задача"
-                date_str = f" ({m.get('date')})" if m.get("date") else ""
-                archived_tag = " [Архив]" if m.get("status") == "archived" else ""
-                lines.append(f"- [{kind}]{archived_tag} {m.get('title')}{date_str}")
-
-            if matches:
-                top_m = matches[0]
-                self._last_event[chat_id] = {
-                    "id": top_m.get("id"),
-                    "title": top_m.get("title"),
-                    "date": top_m.get("date"),
-                    "time": top_m.get("time"),
-                    "type": top_m.get("type")
-                }
-
-            return Reply("\n".join(lines))
-
-        if action == AIAction.RESCHEDULE_RECORD:
-            target = params.get("target", "last")
-            new_date = params.get("new_date")
-            new_time = params.get("new_time")
-            query = params.get("query")
-
-            if not new_date and not new_time:
-                draft_d = {"action": "reschedule_record", "target": target}
-                if query:
-                    draft_d["query"] = query
-                self._pending[chat_id] = PendingClarification(
-                    slot="time",
-                    draft=draft_d
-                )
-                return Reply("На какую дату или время перенести?")
-
-            record = None
-            if query:
-                records = await self.db.get_all_records_for_search(chat_id, target if target in ("meeting", "task") else "all")
-                if records:
-                    active_recs = [r for r in records if r.get("status") not in ("completed", "archived")]
-                    cands = active_recs if active_recs else records
-                    matches = self.search_engine.rank_records(query, cands, top_k=1)
-                    if matches:
-                        record = matches[0]
-
-            if not record:
-                record = self._last_event.get(chat_id)
-                if not record or (target in ("meeting", "task") and record.get("type") != target):
-                    db_record = await self.db.get_latest_record(chat_id, target)
-                    if db_record:
-                        record = db_record
-
-            if not record:
-                return Reply("Не удалось найти предыдущую запись для переноса. Уточните, какую именно встречу или задачу вы хотите перенести.")
-
-            rec_type = record.get("type", "meeting")
-            title = record.get("title", "Запись")
-            rec_id = record.get("id")
-
-            if rec_type == "meeting":
-                cur_date = record.get("date") or record.get("start_date")
-                cur_time = record.get("time") or record.get("start_time")
-                target_date = new_date or cur_date
-                target_time = new_time or cur_time
-
-                if not target_date or not target_time:
-                    self._pending[chat_id] = PendingClarification(
-                        slot="time" if not target_time else "date",
-                        draft={"action": "reschedule_record", "target": "meeting", "new_date": target_date, "new_time": target_time}
-                    )
-                    return Reply("Уточните дату и время переноса.")
-
-                rec_val = record.get("recurrence")
-                conflict = await self.db.check_meeting_conflict(chat_id, target_date, target_time, exclude_id=rec_id, recurrence=rec_val)
-                await self.db.update_meeting_time(chat_id, rec_id, target_date, target_time)
-
-                self._last_event[chat_id] = {
-                    "id": rec_id,
-                    "title": title,
-                    "date": target_date,
-                    "time": target_time,
-                    "type": "meeting"
-                }
-
-                conflict_note = f"\nВнимание: в это же время уже стоит «{conflict.get('title')}»." if conflict else ""
-                return Reply(f"Встреча «{title}» успешно перенесена на {target_date} в {target_time}.{conflict_note}")
-
-            else:
-                cur_date = record.get("date") or record.get("due_date")
-                cur_time = record.get("time") or record.get("due_time")
-                target_date = new_date or cur_date
-                target_time = new_time or cur_time
-
-                await self.db.update_task_time(chat_id, rec_id, target_date, target_time)
-
-                self._last_event[chat_id] = {
-                    "id": rec_id,
-                    "title": title,
-                    "date": target_date,
-                    "time": target_time,
-                    "type": "task"
-                }
-
-                date_part = f" на {target_date}" if target_date else ""
-                time_part = f" в {target_time}" if target_time else ""
-                label = "Напоминание" if record.get("is_reminder") else "Задача"
-                res_verb = "перенесено" if record.get("is_reminder") else "перенесена"
-                return Reply(f"{label} «{title}» успешно {res_verb}{date_part}{time_part}.")
-
-        if action == AIAction.COMPLETE_RECORD:
-            query = params.get("query")
-            record = None
-            if query:
-                records = await self.db.get_all_records_for_search(chat_id, "tasks")
-                if records:
-                    pending_records = [r for r in records if r.get("status") not in ("completed", "archived")]
-                    candidates = pending_records if pending_records else records
-                    matches = self.search_engine.rank_records(query, candidates, top_k=1)
-                    if matches:
-                        record = matches[0]
-
-            if not record:
-                record = self._last_event.get(chat_id)
-                if not record or record.get("type") != "task":
-                    record = await self.db.get_latest_record(chat_id, "task")
-
-            if not record or record.get("type") != "task":
-                return Reply("Не удалось найти задачу для отметки выполненной. Уточните название задачи.")
-
-            rec_id = record["id"]
-            title = record.get("title", "Задача")
-            recurrence = record.get("recurrence")
-            success = await self.db.mark_task_completed(chat_id, rec_id)
-            if success:
-                if recurrence:
-                    today_str = datetime.date.today().isoformat()
-                    next_d = Database.calculate_next_occurrence(record.get("date") or today_str, recurrence, from_date=today_str)
-                    self._last_event[chat_id] = {**record, "date": next_d, "status": "pending"}
-                    return Reply(f"Задача «{title}» выполнена! Следующее повторение запланировано на {next_d}. ✅")
-                self._last_event[chat_id] = {**record, "status": "completed"}
-                return Reply(f"Задача «{title}» отмечена как выполненная! ✅")
-            return Reply(f"Не удалось обновить статус задачи «{title}».")
-
-        if action == AIAction.DELETE_RECORD:
-            target = params.get("target", "last")
-            query = params.get("query")
-            record = None
-
-            if query:
-                records = await self.db.get_all_records_for_search(chat_id, target if target in ("meeting", "task") else "all")
-                if records:
-                    matches = self.search_engine.rank_records(query, records, top_k=1)
-                    if matches:
-                        record = matches[0]
-
-            if not record:
-                record = self._last_event.get(chat_id)
-                if not record or (target in ("meeting", "task") and record.get("type") != target):
-                    record = await self.db.get_latest_record(chat_id, target)
-
-            if not record:
-                return Reply("Не удалось найти запись для удаления. Уточните название задачи или встречи.")
-
-            rec_type = record.get("type", "task")
-            rec_id = record["id"]
-            title = record.get("title", "Запись")
-
-            success = await self.db.delete_record(chat_id, rec_type, rec_id)
-            if success:
-                if self._last_event.get(chat_id, {}).get("id") == rec_id:
-                    self._last_event.pop(chat_id, None)
-                if rec_type == "meeting":
-                    return Reply(f"Встреча «{title}» успешно отменена и удалена. 🗑️")
-                return Reply(f"Задача «{title}» успешно удалена. 🗑️")
-            return Reply(f"Не удалось удалить запись «{title}».")
-
-        if action == AIAction.UPDATE_RECORD:
-            target = params.get("target", "last")
-            new_title = params.get("new_title", "").strip()
-            query = params.get("query")
-
-            if not new_title:
-                return Reply("Укажите новое название для задачи или встречи.")
-
-            record = None
-            if query:
-                records = await self.db.get_all_records_for_search(chat_id, target if target in ("meeting", "task") else "all")
-                if records:
-                    matches = self.search_engine.rank_records(query, records, top_k=1)
-                    if matches:
-                        record = matches[0]
-
-            if not record:
-                record = self._last_event.get(chat_id)
-                if not record or (target in ("meeting", "task") and record.get("type") != target):
-                    record = await self.db.get_latest_record(chat_id, target)
-
-            if not record:
-                return Reply("Не удалось найти запись для изменения. Уточните название задачи или встречи.")
-
-            rec_type = record.get("type", "task")
-            rec_id = record["id"]
-            old_title = record.get("title", "")
-
-            success = await self.db.update_record_title(chat_id, rec_type, rec_id, new_title)
-            if success:
-                self._last_event[chat_id] = {**record, "title": new_title}
-                kind = "Встреча" if rec_type == "meeting" else "Задача"
-                return Reply(f"{kind} «{old_title}» переименована в «{new_title}». ✏️")
-            return Reply(f"Не удалось обновить запись «{old_title}».")
-
-        if action == AIAction.ASK_CLARIFICATION:
-            prev_draft = self._pending[chat_id].draft if chat_id in self._pending else {}
-            new_draft = {**prev_draft, **params.get("draft_data", {})}
-            self._pending[chat_id] = PendingClarification(
-                slot=params.get("missing_slot"),
-                draft=new_draft,
-            )
-            return Reply(params.get("question", DEFAULT_QUESTION))
-
-        logger.info("Unknown action=%s params=%s", action.value, params)
-        return Reply("Запрос принят, но действие не определено.")
+        ctx = HandlerContext(
+            chat_id=chat_id,
+            db=self.db,
+            search_engine=self.search_engine,
+            pending=self._pending,
+            last_event=self._last_event,
+            dispatcher=self._execute_single_action,
+            raw_text=raw_text,
+            user_reply=user_reply
+        )
+        return await handler.handle(params, ctx)
 
     async def get_archive_view(self, chat_id: int, filter_type: str = "all") -> str:
-        if filter_type not in ("all", "meetings", "tasks"):
-            filter_type = "all"
-        data = await self.db.get_archive(chat_id, filter_type=filter_type, limit=15)
-        meetings = data.get("meetings", [])
-        tasks = data.get("tasks", [])
+        return await format_archive_view(self.db, chat_id, filter_type=filter_type)
 
-        if not meetings and not tasks:
-            if filter_type == "meetings":
-                return "📦 В архиве нет прошедших встреч."
-            if filter_type == "tasks":
-                return "📦 В архиве нет завершенных задач."
-            return "📦 Архив пуст. Прошедшие встречи и завершенные задачи сохраняются здесь."
-
-        header = "📦 Архив событий:"
-        if filter_type == "meetings":
-            header = "📦 Архив встреч:"
-        elif filter_type == "tasks":
-            header = "📦 Архив задач:"
-
-        lines = [header]
-        if meetings:
-            if filter_type == "all":
-                lines.append("\nПрошедшие встречи:")
-            for m in meetings:
-                d = m.get("start_date") or ""
-                t = m.get("start_time") or ""
-                title = m.get("title")
-                lines.append(f"• {d} {t} — {title}")
-
-        if tasks:
-            if filter_type == "all":
-                lines.append("\nАрхивные задачи:")
-            for t in tasks:
-                status = "[x]" if t.get("status") in ("completed", "archived") else "[ ]"
-                d_str = f" ({t.get('due_date')})" if t.get("due_date") else ""
-                lines.append(f"• {status} {t.get('title')}{d_str}")
-
-        return "\n".join(lines)
+    @staticmethod
+    def _format_recurrence(recurrence: Optional[str]) -> str:
+        return format_recurrence(recurrence)

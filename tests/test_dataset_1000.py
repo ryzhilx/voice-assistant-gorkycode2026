@@ -7,8 +7,6 @@ from typing import List, Dict, Any
 from unittest.mock import AsyncMock
 from app.storage.db import Database
 from app.ai.embeddings import SemanticSearchEngine
-from app.ai.llm_client import LLMOrchestrator
-from app.ai.schemas import AIAction, AIResponse
 from app.orchestrator.dialogue import DialogueOrchestrator
 
 CSV_PATH = os.path.join(os.path.dirname(__file__), "..", "voice_assistant_events_1000_77e927b5d2.csv")
@@ -17,11 +15,7 @@ class TestDataset1000(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.db = Database(":memory:")
         self.search_engine = SemanticSearchEngine()
-        self.llm = LLMOrchestrator()
-        self.llm.yandex_api_key = None
-        self.llm.yandex_folder_id = None
         self.orch = DialogueOrchestrator(
-            llm=self.llm,
             db=self.db,
             search_engine=self.search_engine
         )
@@ -29,7 +23,6 @@ class TestDataset1000(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.search_engine.aclose()
-        await self.llm.aclose()
         await self.orch.aclose()
 
     def _load_csv(self) -> List[Dict[str, str]]:

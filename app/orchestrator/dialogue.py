@@ -6,7 +6,7 @@ from app.agent.agent import ToolCallingAgent
 from app.ai.embeddings import SemanticSearchEngine
 from app.config import settings
 from app.orchestrator.context import Reply
-from app.orchestrator.formatters import format_archive_view, format_recurrence
+from app.orchestrator.formatters import format_archive_view
 from app.storage.db import Database
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,3 @@ class DialogueOrchestrator:
     async def get_archive_view(self, chat_id: int, filter_type: str = "all") -> str:
         return await format_archive_view(self.db, chat_id, filter_type=filter_type)
 
-    @staticmethod
-    def _format_recurrence(recurrence: Optional[str]) -> str:
-        return format_recurrence(recurrence)

@@ -14,7 +14,6 @@ class LLMOrchestrator:
     def __init__(self, http_client: Optional[httpx.AsyncClient] = None):
         self.yandex_api_key = settings.yandex_api_key
         self.yandex_folder_id = settings.yandex_folder_id
-        self.gigachat_credentials = settings.gigachat_credentials
         self._current_timezone: str = "Europe/Moscow"
         self._http_client = http_client
         self._owns_client = False
@@ -52,14 +51,6 @@ class LLMOrchestrator:
                     return res
             except Exception as e:
                 logger.warning("YandexGPT request failed: %s", e)
-
-        if self.gigachat_credentials:
-            try:
-                res = await self._call_gigachat(text_clean)
-                if res:
-                    return res
-            except Exception as e:
-                logger.warning("GigaChat request failed: %s", e)
 
         return AIResponse(action=AIAction.UNKNOWN, params={})
 
@@ -179,94 +170,7 @@ class LLMOrchestrator:
 
         return None
 
-    @staticmethod
-    def _extract_recurrence(text: str) -> Optional[str]:
-        low = text.lower()
-        if re.search(r"\bпо\s+понедельникам\b|\bкаждый\s+понедельник\b", low):
-            return "weekly:mon"
-        if re.search(r"\bпо\s+вторникам\b|\bкаждый\s+вторник\b", low):
-            return "weekly:tue"
-        if re.search(r"\bпо\s+средам\b|\bкаждую\s+среду\b", low):
-            return "weekly:wed"
-        if re.search(r"\bпо\s+четвергам\b|\bкаждый\s+четверг\b", low):
-            return "weekly:thu"
-        if re.search(r"\bпо\s+пятницам\b|\bкаждую\s+пятницу\b", low):
-            return "weekly:fri"
-        if re.search(r"\bпо\s+субботам\b|\bкаждую\s+субботу\b", low):
-            return "weekly:sat"
-        if re.search(r"\bпо\s+воскресеньям\b|\bкаждое\s+воскресенье\b", low):
-            return "weekly:sun"
-        if re.search(r"\b(по\s+будням|в\s+будни|в\s+будние\s+дни|каждый\s+будний\s+день|по\s+будним\s+дням|с\s+понедельника\s+по\s+пятницу)\b", low):
-            return "weekdays"
-        if re.search(r"\b(по\s+выходным|в\s+выходные|на\s+выходных|каждые\s+выходные)\b", low):
-            return "weekends"
-        if re.search(r"\b(каждый\s+день|ежедневно|каждое\s+утро|каждый\s+вечер|по\s+дням)\b", low):
-            return "daily"
-        if re.search(r"\b(каждую\s+неделю|еженедельно|раз\s+в\s+неделю)\b", low):
-            return "weekly"
-        if re.search(r"\b(каждый\s+месяц|ежемесячно|раз\s+в\s+месяц)\b", low):
-            return "monthly"
-        return None
 
-    def _initial_recurring_date(self, recurrence: str, target_time: Optional[str] = None) -> datetime.date:
-        try:
-            from zoneinfo import ZoneInfo
-            now_dt = datetime.datetime.now(ZoneInfo(self._current_timezone)).replace(tzinfo=None)
-        except Exception:
-            now_dt = datetime.datetime.now()
-        today = now_dt.date()
-
-        time_passed = False
-        if target_time:
-            try:
-                th, tm = map(int, target_time.split(":"))
-                now_min = now_dt.hour * 60 + now_dt.minute
-                target_min = th * 60 + tm
-                if target_min <= now_min:
-                    time_passed = True
-            except Exception:
-                pass
-
-        if recurrence == "daily":
-            return today
-
-        if recurrence == "weekdays":
-            cand = today + datetime.timedelta(days=1) if time_passed else today
-            while cand.weekday() >= 5:
-                cand = cand + datetime.timedelta(days=1)
-            return cand
-
-        if recurrence == "weekends":
-            cand = today + datetime.timedelta(days=1) if time_passed else today
-            while cand.weekday() < 5:
-                cand = cand + datetime.timedelta(days=1)
-            return cand
-
-        if recurrence.startswith("weekly:"):
-            day_code = recurrence.split(":", 1)[1]
-            day_map = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
-            target_wd = day_map.get(day_code, 0)
-            days_ahead = (target_wd - today.weekday()) % 7
-            if days_ahead == 0 and time_passed:
-                days_ahead = 7
-            return today + datetime.timedelta(days=days_ahead)
-
-        if recurrence == "weekly":
-            return today + datetime.timedelta(days=7) if time_passed else today
-
-        if recurrence == "monthly":
-            if time_passed:
-                import calendar
-                y = today.year
-                m = today.month + 1
-                if m > 12:
-                    m = 1
-                    y += 1
-                max_d = calendar.monthrange(y, m)[1]
-                return datetime.date(y, m, min(today.day, max_d))
-            return today
-
-        return today
 
     def _resolve_clarification(self, answer_text: str, context: Dict[str, Any]) -> AIResponse:
         draft = dict(context.get("draft_data", {}))
@@ -407,32 +311,8 @@ class LLMOrchestrator:
                                 if not has_pm_word:
                                     params[time_key] = f"{explicit_h:02d}:{explicit_m:02d}"
 
-                        if not params.get("recurrence"):
-                            rec = self._extract_recurrence(text)
-                            if rec:
-                                params["recurrence"] = rec
-
-                        rec_val = params.get("recurrence")
-                        if rec_val:
-                            date_key = "start_date" if action_val == AIAction.CREATE_MEETING.value else "due_date"
-                            time_val = params.get(time_key)
-                            target_init_date = self._initial_recurring_date(rec_val, time_val)
-                            if not params.get(date_key):
-                                params[date_key] = str(target_init_date)
-                            else:
-                                try:
-                                    from zoneinfo import ZoneInfo
-                                    now_today = datetime.datetime.now(ZoneInfo(self._current_timezone)).date()
-                                except Exception:
-                                    now_today = datetime.datetime.now().date()
-                                if params.get(date_key) == str(now_today) and target_init_date > now_today:
-                                    params[date_key] = str(target_init_date)
-
                     return AIResponse(
                         action=AIAction(action_val),
                         params=params
                     )
-        return None
-
-    async def _call_gigachat(self, text: str) -> Optional[AIResponse]:
         return None

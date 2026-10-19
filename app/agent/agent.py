@@ -11,7 +11,6 @@ from app.agent.schemas import ToolCall, ToolExecutionResult
 from app.agent.tools import build_default_tools, get_tools_json_schema
 from app.agent.tools.base import BaseTool
 from app.ai.embeddings import SemanticSearchEngine
-from app.ai.llm_client import LLMOrchestrator
 from app.config import settings
 from app.storage.db import Database
 
@@ -22,13 +21,13 @@ class ToolCallingAgent:
         self,
         db: Optional[Database] = None,
         search_engine: Optional[SemanticSearchEngine] = None,
-        llm: Optional[LLMOrchestrator] = None,
+        llm: Optional[Any] = None,
         yandex_api_key: Optional[str] = None,
         yandex_folder_id: Optional[str] = None
     ):
         self.db = db or Database(settings.database_path)
         self.search_engine = search_engine or SemanticSearchEngine()
-        self.llm = llm or LLMOrchestrator()
+        self.llm = llm
         self.yandex_api_key = yandex_api_key or settings.yandex_api_key
         self.yandex_folder_id = yandex_folder_id or settings.yandex_folder_id
 
@@ -53,7 +52,7 @@ class ToolCallingAgent:
             res = self.search_engine.aclose()
             if inspect.isawaitable(res):
                 await res
-        if hasattr(self.llm, "aclose") and callable(getattr(self.llm, "aclose")):
+        if self.llm and hasattr(self.llm, "aclose") and callable(getattr(self.llm, "aclose")):
             res = self.llm.aclose()
             if inspect.isawaitable(res):
                 await res
@@ -210,11 +209,10 @@ class ToolCallingAgent:
 
     async def run(self, chat_id: int, message: str) -> str:
         tz_str = await self.db.get_user_timezone(chat_id)
-        if hasattr(self.llm, "set_current_timezone") and callable(getattr(self.llm, "set_current_timezone")):
+        if self.llm and hasattr(self.llm, "set_current_timezone") and callable(getattr(self.llm, "set_current_timezone")):
             self.llm.set_current_timezone(tz_str)
 
         tool_calls, direct_reply = await self._call_llm(chat_id, message, tz_str)
-
 
         if tool_calls:
             results: List[ToolExecutionResult] = []

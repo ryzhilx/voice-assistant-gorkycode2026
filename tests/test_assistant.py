@@ -213,7 +213,7 @@ class TestIntentRecognition(unittest.IsolatedAsyncioTestCase):
         from app.orchestrator.dialogue import DialogueOrchestrator
         from app.storage.db import Database
         mem_db = Database(":memory:")
-        orch = DialogueOrchestrator(llm=self.orchestrator, db=mem_db)
+        orch = DialogueOrchestrator(db=mem_db)
 
         reply1 = await orch.handle_text(100, "Каждый день в 9:00 пить витамины")
         self.assertIn("ежедневно", reply1.text)

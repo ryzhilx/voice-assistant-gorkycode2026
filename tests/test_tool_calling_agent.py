@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock
 
 from app.agent.agent import ToolCallingAgent
 from app.agent.schemas import ToolCall
-from app.ai.llm_client import LLMOrchestrator
 from app.orchestrator.dialogue import DialogueOrchestrator
 from app.storage.db import Database
 
@@ -12,12 +11,8 @@ CHAT = 777
 class TestToolCallingAgent(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.db = Database(":memory:")
-        self.llm = LLMOrchestrator()
-        self.llm.yandex_api_key = None
-        self.llm.yandex_folder_id = None
         self.agent = ToolCallingAgent(
             db=self.db,
-            llm=self.llm,
             yandex_api_key=None,
             yandex_folder_id=None
         )

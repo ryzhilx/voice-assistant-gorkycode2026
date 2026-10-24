@@ -6,4 +6,4 @@ httpx>=0.28.1
 
 # Configuration
 python-dotenv>=1.2.4
-dateparser>=1.2.0
+dateparser>=1.4.3

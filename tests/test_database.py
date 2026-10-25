@@ -168,7 +168,7 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
             due_date="2026-10-18",
             recurrence="daily"
         )
-        ok = await self.db.mark_task_completed(user_id=23, task_id=task_id)
+        ok = await self.db.mark_task_completed(user_id=23, task_id=task_id, current_date="2026-10-18")
         self.assertTrue(ok)
 
         schedule = await self.db.get_schedule(user_id=23, start_date="2026-10-19", end_date="2026-10-19")
@@ -219,7 +219,7 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
             recurrence="daily"
         )
         await self.db.advance_recurring_task(tid, "2026-10-20")
-        await self.db.mark_task_completed(user_id=25, task_id=tid)
+        await self.db.mark_task_completed(user_id=25, task_id=tid, current_date="2026-10-19")
 
         row = self.db._get_connection().execute("SELECT due_date FROM tasks WHERE id = ?", (tid,)).fetchone()
         self.assertEqual(row["due_date"], "2026-10-20")
@@ -278,8 +278,11 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         row = self.db._get_connection().execute("SELECT due_date FROM tasks WHERE id = ?", (tid,)).fetchone()
         import datetime
-        from zoneinfo import ZoneInfo
-        today_str = datetime.datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()
+        try:
+            from zoneinfo import ZoneInfo
+            today_str = datetime.datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()
+        except Exception:
+            today_str = datetime.date.today().isoformat()
         self.assertGreaterEqual(row["due_date"], today_str)
 
     async def test_meeting_duration_not_archived_until_finished(self):

@@ -766,7 +766,12 @@ class Database:
                     conn.close()
         return await asyncio.to_thread(_query)
 
-    async def mark_task_completed(self, user_id: int, task_id: int) -> bool:
+    async def mark_task_completed(
+        self,
+        user_id: int,
+        task_id: int,
+        current_date: Optional[str] = None
+    ) -> bool:
         def _update():
             conn = self._get_connection()
             try:
@@ -780,13 +785,16 @@ class Database:
 
                     if row["recurrence"]:
                         import datetime
-                        tz_row = conn.execute("SELECT timezone FROM users WHERE user_id = ?", (user_id,)).fetchone()
-                        tz_str = tz_row["timezone"] if tz_row and tz_row["timezone"] else "Europe/Moscow"
-                        try:
-                            from zoneinfo import ZoneInfo
-                            today_str = datetime.datetime.now(ZoneInfo(tz_str)).date().isoformat()
-                        except Exception:
-                            today_str = datetime.date.today().isoformat()
+                        if current_date:
+                            today_str = current_date
+                        else:
+                            tz_row = conn.execute("SELECT timezone FROM users WHERE user_id = ?", (user_id,)).fetchone()
+                            tz_str = tz_row["timezone"] if tz_row and tz_row["timezone"] else "Europe/Moscow"
+                            try:
+                                from zoneinfo import ZoneInfo
+                                today_str = datetime.datetime.now(ZoneInfo(tz_str)).date().isoformat()
+                            except Exception:
+                                today_str = datetime.date.today().isoformat()
 
                         due = row["due_date"] or today_str
                         if due < today_str:

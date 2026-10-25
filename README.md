@@ -1,5 +1,7 @@
 # Голосовой ассистент для задач и встреч
 
+> **Рабочий прототип бота в Telegram:** [@voiceassistant123123bot](https://t.me/voiceassistant123123bot)
+
 [![Build Status](https://github.com/ryzhilx/voice-assistant-gorkycode2026/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ryzhilx/voice-assistant-gorkycode2026/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)
 ![aiogram](https://img.shields.io/badge/aiogram-3.x-2ea44f?logo=telegram)

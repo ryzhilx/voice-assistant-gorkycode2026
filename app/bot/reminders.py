@@ -22,7 +22,7 @@ async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetim
     else:
         try:
             from zoneinfo import ZoneInfo
-            current_dt = datetime.datetime.now(ZoneInfo("Europe/Moscow"))
+            current_dt = datetime.datetime.now(ZoneInfo(settings.app_timezone))
         except Exception:
             current_dt = datetime.datetime.now()
         current_date = current_dt.strftime("%Y-%m-%d")
@@ -34,7 +34,7 @@ async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetim
 
     for task in due_tasks:
         if now is None:
-            user_tz = task.get("timezone") or "Europe/Moscow"
+            user_tz = task.get("timezone") or settings.app_timezone
             try:
                 from zoneinfo import ZoneInfo
                 u_now = datetime.datetime.now(ZoneInfo(user_tz))
@@ -66,20 +66,21 @@ async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetim
 
         try:
             await bot.send_message(chat_id=user_id, text=text, reply_markup=keyboard)
-            count += 1
         except Exception as e:
             logger.warning("Failed to send task reminder %s to %s: %s", task_id, user_id, e)
-        finally:
-            if recurrence:
-                from_d = u_date if now is None else current_date
-                next_date = Database.calculate_next_occurrence(task["due_date"], recurrence, from_date=from_d)
-                await db.advance_recurring_task(task_id, next_date)
-            else:
-                await db.mark_task_reminder_sent(task_id)
+            continue
+
+        count += 1
+        if recurrence:
+            from_d = u_date if now is None else current_date
+            next_date = Database.calculate_next_occurrence(task["due_date"], recurrence, from_date=from_d)
+            await db.advance_recurring_task(task_id, next_date)
+        else:
+            await db.mark_task_reminder_sent(task_id)
 
     for meeting in due_meetings:
         if now is None:
-            user_tz = meeting.get("timezone") or "Europe/Moscow"
+            user_tz = meeting.get("timezone") or settings.app_timezone
             try:
                 from zoneinfo import ZoneInfo
                 u_now = datetime.datetime.now(ZoneInfo(user_tz))
@@ -104,16 +105,17 @@ async def check_and_send_reminders(bot: Bot, db: Database, now: Optional[datetim
 
         try:
             await bot.send_message(chat_id=user_id, text=text)
-            count += 1
         except Exception as e:
             logger.warning("Failed to send meeting reminder %s to %s: %s", meeting_id, user_id, e)
-        finally:
-            if recurrence:
-                from_d = u_date if now is None else current_date
-                next_date = Database.calculate_next_occurrence(meeting["start_date"], recurrence, from_date=from_d)
-                await db.advance_recurring_meeting(meeting_id, next_date)
-            else:
-                await db.mark_meeting_reminder_sent(meeting_id)
+            continue
+
+        count += 1
+        if recurrence:
+            from_d = u_date if now is None else current_date
+            next_date = Database.calculate_next_occurrence(meeting["start_date"], recurrence, from_date=from_d)
+            await db.advance_recurring_meeting(meeting_id, next_date)
+        else:
+            await db.mark_meeting_reminder_sent(meeting_id)
 
     try:
         await db.archive_past_records()

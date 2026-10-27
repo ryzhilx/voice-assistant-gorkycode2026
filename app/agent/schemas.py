@@ -29,7 +29,6 @@ class ToolDefinition:
                 required.append(param_name)
 
         return {
-            "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,

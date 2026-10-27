@@ -2,6 +2,11 @@ import datetime
 from typing import Any, Dict, List
 from app.agent.schemas import ToolDefinition, ToolExecutionResult, ToolParameter
 from app.agent.tools.base import BaseTool
+from app.agent.tools.validation import (
+    ToolValidationError,
+    normalize_date,
+    normalize_filter,
+)
 from app.orchestrator.formatters import format_recurrence, format_archive_view
 
 class GetScheduleTool(BaseTool):
@@ -36,9 +41,19 @@ class GetScheduleTool(BaseTool):
             now_date = datetime.datetime.now().date()
         now_str = str(now_date)
 
-        start_date = kwargs.get("start_date") or now_str
-        end_date = kwargs.get("end_date") or start_date
-        filter_type = kwargs.get("filter_type", "all") or "all"
+        try:
+            start_date = normalize_date(kwargs.get("start_date")) or now_str
+            end_date = normalize_date(kwargs.get("end_date")) or start_date
+            filter_type = normalize_filter(kwargs.get("filter_type"), {"all", "meetings", "tasks"})
+        except ToolValidationError as exc:
+            return ToolExecutionResult(tool_name="get_schedule", success=False, output=str(exc))
+
+        if end_date < start_date:
+            return ToolExecutionResult(
+                tool_name="get_schedule",
+                success=False,
+                output="Конечная дата не может быть раньше начальной."
+            )
 
         data = await self.db.get_schedule(chat_id, start_date, end_date, filter_type)
         tasks = data.get("tasks", [])
@@ -113,7 +128,10 @@ class GetArchiveTool(BaseTool):
         )
 
     async def execute(self, chat_id: int, **kwargs: Any) -> ToolExecutionResult:
-        filter_type = kwargs.get("filter_type", "all") or "all"
+        try:
+            filter_type = normalize_filter(kwargs.get("filter_type"), {"all", "meetings", "tasks"})
+        except ToolValidationError as exc:
+            return ToolExecutionResult(tool_name="get_archive", success=False, output=str(exc))
         text_view = await format_archive_view(self.db, chat_id, filter_type=filter_type)
         return ToolExecutionResult(
             tool_name="get_archive",
@@ -142,8 +160,21 @@ class SearchRecordsTool(BaseTool):
         )
 
     async def execute(self, chat_id: int, **kwargs: Any) -> ToolExecutionResult:
-        query = kwargs.get("query", "").strip()
-        record_type = kwargs.get("record_type", "all") or "all"
+        query = str(kwargs.get("query") or "").strip()
+        try:
+            record_type = normalize_filter(
+                kwargs.get("record_type") or kwargs.get("target"),
+                {"all", "meetings", "tasks"},
+            )
+        except ToolValidationError as exc:
+            return ToolExecutionResult(tool_name="search_records", success=False, output=str(exc))
+
+        if not query:
+            return ToolExecutionResult(
+                tool_name="search_records",
+                success=False,
+                output="Укажите, что именно нужно найти."
+            )
 
         records = await self.db.get_all_records_for_search(chat_id, record_type)
         if not records:
@@ -153,7 +184,7 @@ class SearchRecordsTool(BaseTool):
                 output=f"По запросу «{query}» ничего не найдено."
             )
 
-        matches = self.search_engine.rank_records(query, records, top_k=3)
+        matches = await self.search_engine.rank_records_async(query, records, top_k=3)
         if not matches:
             return ToolExecutionResult(
                 tool_name="search_records",

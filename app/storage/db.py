@@ -2,6 +2,11 @@ import sqlite3
 import asyncio
 from typing import List, Dict, Any, Optional
 
+from app.config import settings
+
+DEFAULT_TIMEZONE = settings.app_timezone or "Europe/Moscow"
+
+
 class Database:
     def __init__(self, db_path: str = "assistant.db"):
         self.db_path = db_path
@@ -15,24 +20,28 @@ class Database:
         if self._is_memory:
             self._shared_conn = sqlite3.connect(":memory:", check_same_thread=False)
             self._shared_conn.row_factory = sqlite3.Row
+            self._shared_conn.execute("PRAGMA busy_timeout=5000")
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
         if self._is_memory and self._shared_conn:
             return self._shared_conn
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
     def _init_db(self) -> None:
         conn = self._get_connection()
         try:
             with conn:
-                conn.execute("""
+                conn.execute(f"""
                     CREATE TABLE IF NOT EXISTS users (
                         user_id INTEGER PRIMARY KEY,
                         username TEXT,
-                        timezone TEXT DEFAULT 'Europe/Moscow',
+                        timezone TEXT DEFAULT '{DEFAULT_TIMEZONE}',
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
@@ -49,6 +58,7 @@ class Database:
                         recurrence TEXT DEFAULT NULL,
                         base_date TEXT DEFAULT NULL,
                         last_completed_date TEXT DEFAULT NULL,
+                        completed_at TEXT DEFAULT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
@@ -94,6 +104,10 @@ class Database:
                     pass
                 try:
                     conn.execute("ALTER TABLE tasks ADD COLUMN last_completed_date TEXT DEFAULT NULL")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN completed_at TEXT DEFAULT NULL")
                 except sqlite3.OperationalError:
                     pass
                 try:
@@ -459,10 +473,11 @@ class Database:
                 WHERE user_id = ?
                   AND status != 'archived'
                   AND is_reminder = 1
+                  AND reminder_sent = 1
                   AND (recurrence IS NULL OR recurrence = '')
                   AND (
                       due_date < ?
-                      OR (due_date = ? AND due_time IS NOT NULL AND due_time <= ? AND reminder_sent = 1)
+                      OR (due_date = ? AND due_time IS NOT NULL AND due_time <= ?)
                   )
                 """,
                 (uid, c_date, c_date, c_time)
@@ -494,7 +509,7 @@ class Database:
                 with conn:
                     if user_id is not None:
                         tz_row = conn.execute("SELECT timezone FROM users WHERE user_id = ?", (user_id,)).fetchone()
-                        tz_str = tz_row["timezone"] if tz_row and tz_row["timezone"] else "Europe/Moscow"
+                        tz_str = tz_row["timezone"] if tz_row and tz_row["timezone"] else DEFAULT_TIMEZONE
                         if current_date and current_time:
                             c_d, c_t = current_date, current_time
                         else:
@@ -508,8 +523,8 @@ class Database:
                         total = _archive_user(conn, user_id, c_d, c_t)
                     else:
                         user_rows = conn.execute(
-                            """
-                            SELECT DISTINCT all_u.user_id, COALESCE(u.timezone, 'Europe/Moscow') as timezone
+                            f"""
+                            SELECT DISTINCT all_u.user_id, COALESCE(u.timezone, '{DEFAULT_TIMEZONE}') as timezone
                             FROM (
                                 SELECT user_id FROM users
                                 UNION
@@ -522,7 +537,7 @@ class Database:
                         ).fetchall()
                         for u in user_rows:
                             uid = u["user_id"]
-                            tz_str = u["timezone"] or "Europe/Moscow"
+                            tz_str = u["timezone"] or DEFAULT_TIMEZONE
                             try:
                                 from zoneinfo import ZoneInfo
                                 now_dt = datetime.datetime.now(ZoneInfo(tz_str))
@@ -689,7 +704,7 @@ class Database:
                 if filter_type in ("all", "tasks"):
                     rows = conn.execute(
                         """
-                        SELECT id, title, due_date, due_time, is_reminder, status
+                        SELECT id, title, due_date, due_time, is_reminder, status, completed_at
                         FROM tasks
                         WHERE user_id = ? AND status IN ('archived', 'completed')
                         ORDER BY COALESCE(due_date, date(created_at)) DESC, due_time DESC
@@ -731,10 +746,16 @@ class Database:
             new_status = "active" if record_type in ("meeting", "meetings") else "pending"
             try:
                 with conn:
-                    cur = conn.execute(
-                        f"UPDATE {table} SET status = ? WHERE id = ? AND user_id = ?",
-                        (new_status, record_id, user_id)
-                    )
+                    if table == "tasks":
+                        cur = conn.execute(
+                            "UPDATE tasks SET status = ?, completed_at = NULL WHERE id = ? AND user_id = ?",
+                            (new_status, record_id, user_id)
+                        )
+                    else:
+                        cur = conn.execute(
+                            "UPDATE meetings SET status = ? WHERE id = ? AND user_id = ?",
+                            (new_status, record_id, user_id)
+                        )
                     return cur.rowcount > 0
             finally:
                 if not self._is_memory:
@@ -742,20 +763,27 @@ class Database:
         return await asyncio.to_thread(_update)
 
     async def get_all_records_for_search(self, user_id: int, record_type: str = "all") -> List[Dict[str, Any]]:
+        normalized_type = {
+            "task": "tasks",
+            "tasks": "tasks",
+            "meeting": "meetings",
+            "meetings": "meetings",
+        }.get(str(record_type or "all").strip().lower(), "all")
+
         def _query():
             conn = self._get_connection()
             records = []
             try:
-                if record_type in ("all", "tasks"):
+                if normalized_type in ("all", "tasks"):
                     rows = conn.execute(
-                        "SELECT id, title, due_date as date, due_time as time, status, 'task' as type, recurrence FROM tasks WHERE user_id = ?",
+                        "SELECT id, title, due_date as date, due_time as time, status, 'task' as type, recurrence, is_reminder, completed_at FROM tasks WHERE user_id = ?",
                         (user_id,)
                     ).fetchall()
                     records.extend([dict(r) for r in rows])
 
-                if record_type in ("all", "meetings"):
+                if normalized_type in ("all", "meetings"):
                     rows = conn.execute(
-                        "SELECT id, title, start_date as date, start_time as time, status, 'meeting' as type, participants, recurrence FROM meetings WHERE user_id = ?",
+                        "SELECT id, title, start_date as date, start_time as time, status, 'meeting' as type, participants, recurrence, duration_minutes FROM meetings WHERE user_id = ?",
                         (user_id,)
                     ).fetchall()
                     records.extend([dict(r) for r in rows])
@@ -783,18 +811,20 @@ class Database:
                     if not row:
                         return False
 
+                    import datetime
+                    if current_date:
+                        completion_date = current_date
+                    else:
+                        tz_row = conn.execute("SELECT timezone FROM users WHERE user_id = ?", (user_id,)).fetchone()
+                        tz_str = tz_row["timezone"] if tz_row and tz_row["timezone"] else DEFAULT_TIMEZONE
+                        try:
+                            from zoneinfo import ZoneInfo
+                            completion_date = datetime.datetime.now(ZoneInfo(tz_str)).date().isoformat()
+                        except Exception:
+                            completion_date = datetime.date.today().isoformat()
+
                     if row["recurrence"]:
-                        import datetime
-                        if current_date:
-                            today_str = current_date
-                        else:
-                            tz_row = conn.execute("SELECT timezone FROM users WHERE user_id = ?", (user_id,)).fetchone()
-                            tz_str = tz_row["timezone"] if tz_row and tz_row["timezone"] else "Europe/Moscow"
-                            try:
-                                from zoneinfo import ZoneInfo
-                                today_str = datetime.datetime.now(ZoneInfo(tz_str)).date().isoformat()
-                            except Exception:
-                                today_str = datetime.date.today().isoformat()
+                        today_str = completion_date
 
                         due = row["due_date"] or today_str
                         if due < today_str:
@@ -835,8 +865,8 @@ class Database:
                         return cur.rowcount > 0
 
                     cur = conn.execute(
-                        "UPDATE tasks SET status = 'completed' WHERE id = ? AND user_id = ?",
-                        (task_id, user_id)
+                        "UPDATE tasks SET status = 'completed', completed_at = ? WHERE id = ? AND user_id = ?",
+                        (completion_date, task_id, user_id)
                     )
                     return cur.rowcount > 0
             finally:
@@ -887,7 +917,8 @@ class Database:
                             due_time = COALESCE(?, due_time),
                             base_date = COALESCE(?, base_date),
                             reminder_sent = 0,
-                            status = 'pending'
+                            status = 'pending',
+                            completed_at = NULL
                         WHERE id = ? AND user_id = ?
                         """,
                         (due_date, due_time, due_date, task_id, user_id)
@@ -905,7 +936,7 @@ class Database:
                 if record_type in ("meeting", "meetings"):
                     row = conn.execute(
                         """
-                        SELECT id, title, start_date as date, start_time as time, status, 'meeting' as type, recurrence
+                        SELECT id, title, start_date as date, start_time as time, status, 'meeting' as type, recurrence, duration_minutes
                         FROM meetings
                         WHERE user_id = ?
                         ORDER BY id DESC
@@ -918,7 +949,7 @@ class Database:
                 if record_type in ("task", "tasks"):
                     row = conn.execute(
                         """
-                        SELECT id, title, due_date as date, due_time as time, status, 'task' as type, recurrence
+                        SELECT id, title, due_date as date, due_time as time, status, 'task' as type, recurrence, is_reminder, completed_at
                         FROM tasks
                         WHERE user_id = ?
                         ORDER BY id DESC
@@ -930,7 +961,7 @@ class Database:
 
                 m_row = conn.execute(
                     """
-                    SELECT id, title, start_date as date, start_time as time, status, 'meeting' as type, created_at, recurrence
+                    SELECT id, title, start_date as date, start_time as time, status, 'meeting' as type, created_at, recurrence, duration_minutes
                     FROM meetings
                     WHERE user_id = ?
                     ORDER BY id DESC
@@ -941,7 +972,7 @@ class Database:
 
                 t_row = conn.execute(
                     """
-                    SELECT id, title, due_date as date, due_time as time, status, 'task' as type, created_at, recurrence
+                    SELECT id, title, due_date as date, due_time as time, status, 'task' as type, created_at, recurrence, is_reminder, completed_at
                     FROM tasks
                     WHERE user_id = ?
                     ORDER BY id DESC
@@ -1000,9 +1031,9 @@ class Database:
         def _query():
             conn = self._get_connection()
             try:
-                base_sql = """
+                base_sql = f"""
                     SELECT t.id, t.user_id, t.title, t.due_date, t.due_time, t.is_reminder, t.recurrence,
-                           COALESCE(u.timezone, 'Europe/Moscow') as timezone
+                           COALESCE(u.timezone, '{DEFAULT_TIMEZONE}') as timezone
                     FROM tasks t
                     LEFT JOIN users u ON t.user_id = u.user_id
                     WHERE t.status NOT IN ('completed', 'archived')
@@ -1045,9 +1076,9 @@ class Database:
         def _query():
             conn = self._get_connection()
             try:
-                base_sql = """
+                base_sql = f"""
                     SELECT m.id, m.user_id, m.title, m.start_date, m.start_time, m.duration_minutes, m.participants, m.recurrence,
-                           COALESCE(u.timezone, 'Europe/Moscow') as timezone
+                           COALESCE(u.timezone, '{DEFAULT_TIMEZONE}') as timezone
                     FROM meetings m
                     LEFT JOIN users u ON m.user_id = u.user_id
                     WHERE m.reminder_sent = 0
@@ -1094,13 +1125,20 @@ class Database:
                     "SELECT timezone FROM users WHERE user_id = ?",
                     (user_id,)
                 ).fetchone()
-                return row["timezone"] if row and row["timezone"] else "Europe/Moscow"
+                return row["timezone"] if row and row["timezone"] else DEFAULT_TIMEZONE
             finally:
                 if not self._is_memory:
                     conn.close()
         return await asyncio.to_thread(_get)
 
     async def set_user_timezone(self, user_id: int, timezone: str, username: Optional[str] = None) -> None:
+        from zoneinfo import ZoneInfo
+
+        try:
+            ZoneInfo(timezone)
+        except Exception as exc:
+            raise ValueError(f"Неизвестный часовой пояс: {timezone}") from exc
+
         def _set():
             conn = self._get_connection()
             try:

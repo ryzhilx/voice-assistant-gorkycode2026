@@ -1,6 +1,7 @@
 from typing import Any, Dict
 from app.agent.schemas import ToolDefinition, ToolExecutionResult, ToolParameter
 from app.agent.tools.base import BaseTool
+from app.agent.tools.validation import ToolValidationError, normalize_target
 
 class DeleteRecordTool(BaseTool):
     @property
@@ -22,14 +23,17 @@ class DeleteRecordTool(BaseTool):
         )
 
     async def execute(self, chat_id: int, **kwargs: Any) -> ToolExecutionResult:
-        target = kwargs.get("target", "last") or "last"
-        query = kwargs.get("query")
+        try:
+            target = normalize_target(kwargs.get("target"), "last")
+        except ToolValidationError as exc:
+            return ToolExecutionResult(tool_name="delete_record", success=False, output=str(exc))
+        query = str(kwargs.get("query") or "").strip()
         record = None
 
         if query:
             records = await self.db.get_all_records_for_search(chat_id, target if target in ("meeting", "task") else "all")
             if records:
-                matches = self.search_engine.rank_records(query, records, top_k=1)
+                matches = await self.search_engine.rank_records_async(query, records, top_k=1)
                 if matches:
                     record = matches[0]
 
@@ -98,9 +102,12 @@ class UpdateRecordTitleTool(BaseTool):
         )
 
     async def execute(self, chat_id: int, **kwargs: Any) -> ToolExecutionResult:
-        target = kwargs.get("target", "last") or "last"
-        new_title = (kwargs.get("new_title") or "").strip()
-        query = kwargs.get("query")
+        try:
+            target = normalize_target(kwargs.get("target"), "last")
+        except ToolValidationError as exc:
+            return ToolExecutionResult(tool_name="update_record_title", success=False, output=str(exc))
+        new_title = str(kwargs.get("new_title") or "").strip()
+        query = str(kwargs.get("query") or "").strip()
 
         if not new_title:
             return ToolExecutionResult(
@@ -113,7 +120,7 @@ class UpdateRecordTitleTool(BaseTool):
         if query:
             records = await self.db.get_all_records_for_search(chat_id, target if target in ("meeting", "task") else "all")
             if records:
-                matches = self.search_engine.rank_records(query, records, top_k=1)
+                matches = await self.search_engine.rank_records_async(query, records, top_k=1)
                 if matches:
                     record = matches[0]
 

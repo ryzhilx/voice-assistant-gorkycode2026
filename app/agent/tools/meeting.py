@@ -1,6 +1,14 @@
 from typing import Any, Dict
 from app.agent.schemas import ToolDefinition, ToolExecutionResult, ToolParameter
 from app.agent.tools.base import BaseTool
+from app.agent.tools.validation import (
+    ToolValidationError,
+    normalize_date,
+    normalize_duration,
+    normalize_recurrence,
+    normalize_time,
+    normalize_title,
+)
 from app.orchestrator.formatters import format_recurrence
 
 class CreateMeetingTool(BaseTool):
@@ -41,12 +49,15 @@ class CreateMeetingTool(BaseTool):
         )
 
     async def execute(self, chat_id: int, **kwargs: Any) -> ToolExecutionResult:
-        title = kwargs.get("title", "Встреча")
-        start_date = kwargs.get("start_date")
-        start_time = kwargs.get("start_time")
-        duration = int(kwargs.get("duration_minutes", 60) or 60)
-        participants = kwargs.get("participants")
-        recurrence = kwargs.get("recurrence")
+        try:
+            title = normalize_title(kwargs.get("title"), "Встреча")
+            start_date = normalize_date(kwargs.get("start_date"))
+            start_time = normalize_time(kwargs.get("start_time"))
+            duration = normalize_duration(kwargs.get("duration_minutes"), 60)
+            participants = str(kwargs.get("participants") or "").strip() or None
+            recurrence = normalize_recurrence(kwargs.get("recurrence"))
+        except ToolValidationError as exc:
+            return ToolExecutionResult(tool_name="create_meeting", success=False, output=str(exc))
 
         if not start_date or not start_time:
             return ToolExecutionResult(
@@ -55,7 +66,13 @@ class CreateMeetingTool(BaseTool):
                 output="Для создания встречи обязательно укажите дату и время."
             )
 
-        conflict = await self.db.check_meeting_conflict(chat_id, start_date, start_time, recurrence=recurrence)
+        conflict = await self.db.check_meeting_conflict(
+            chat_id,
+            start_date,
+            start_time,
+            recurrence=recurrence,
+            duration_minutes=duration,
+        )
         meeting_id = await self.db.add_meeting(
             user_id=chat_id,
             title=title,
@@ -72,7 +89,9 @@ class CreateMeetingTool(BaseTool):
             "date": start_date,
             "time": start_time,
             "type": "meeting",
-            "recurrence": recurrence
+            "recurrence": recurrence,
+            "duration_minutes": duration,
+            "participants": participants
         }
 
         rec_badge = f" (🔄 {format_recurrence(recurrence)})" if recurrence else ""

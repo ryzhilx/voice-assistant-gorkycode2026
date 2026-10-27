@@ -1,6 +1,12 @@
 from typing import Any, Dict
 from app.agent.schemas import ToolDefinition, ToolExecutionResult, ToolParameter
 from app.agent.tools.base import BaseTool
+from app.agent.tools.validation import (
+    ToolValidationError,
+    normalize_date,
+    normalize_target,
+    normalize_time,
+)
 
 class RescheduleRecordTool(BaseTool):
     @property
@@ -30,10 +36,13 @@ class RescheduleRecordTool(BaseTool):
         )
 
     async def execute(self, chat_id: int, **kwargs: Any) -> ToolExecutionResult:
-        target = kwargs.get("target", "last") or "last"
-        new_date = kwargs.get("new_date")
-        new_time = kwargs.get("new_time")
-        query = kwargs.get("query")
+        try:
+            target = normalize_target(kwargs.get("target"), "last")
+            new_date = normalize_date(kwargs.get("new_date"))
+            new_time = normalize_time(kwargs.get("new_time"))
+        except ToolValidationError as exc:
+            return ToolExecutionResult(tool_name="reschedule_record", success=False, output=str(exc))
+        query = str(kwargs.get("query") or "").strip()
 
         if not new_date and not new_time:
             return ToolExecutionResult(
@@ -48,7 +57,7 @@ class RescheduleRecordTool(BaseTool):
             if records:
                 active_recs = [r for r in records if r.get("status") not in ("completed", "archived")]
                 cands = active_recs if active_recs else records
-                matches = self.search_engine.rank_records(query, cands, top_k=1)
+                matches = await self.search_engine.rank_records_async(query, cands, top_k=1)
                 if matches:
                     record = matches[0]
 
@@ -77,7 +86,15 @@ class RescheduleRecordTool(BaseTool):
             target_time = new_time or cur_time
 
             rec_val = record.get("recurrence")
-            conflict = await self.db.check_meeting_conflict(chat_id, target_date, target_time, exclude_id=rec_id, recurrence=rec_val)
+            duration = int(record.get("duration_minutes") or 60)
+            conflict = await self.db.check_meeting_conflict(
+                chat_id,
+                target_date,
+                target_time,
+                exclude_id=rec_id,
+                recurrence=rec_val,
+                duration_minutes=duration,
+            )
             await self.db.update_meeting_time(chat_id, rec_id, target_date, target_time)
 
             self.last_event_store[chat_id] = {
@@ -85,7 +102,10 @@ class RescheduleRecordTool(BaseTool):
                 "title": title,
                 "date": target_date,
                 "time": target_time,
-                "type": "meeting"
+                "type": "meeting",
+                "recurrence": rec_val,
+                "duration_minutes": duration,
+                "participants": record.get("participants")
             }
 
             conflict_note = f"\nВнимание: в это же время уже стоит «{conflict.get('title')}»." if conflict else ""

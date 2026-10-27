@@ -33,6 +33,7 @@ class ToolCallingAgent:
 
         self._last_event: Dict[int, Dict[str, Any]] = {}
         self._history: Dict[int, List[Dict[str, str]]] = {}
+        self._llm_error: Optional[str] = None
         self.tools: Dict[str, BaseTool] = build_default_tools(
             self.db,
             self.search_engine,
@@ -60,6 +61,7 @@ class ToolCallingAgent:
     def reset(self, chat_id: int) -> None:
         self._history.pop(chat_id, None)
         self._last_event.pop(chat_id, None)
+        self._llm_error = None
 
     def _build_system_prompt(self, timezone_str: str) -> str:
         try:
@@ -118,7 +120,9 @@ class ToolCallingAgent:
         return mapped if mapped in self.tools else None
 
     async def _call_llm(self, chat_id: int, text: str, tz_str: str) -> Tuple[Optional[List[ToolCall]], Optional[str]]:
+        self._llm_error = None
         if not (self.yandex_api_key and self.yandex_folder_id):
+            self._llm_error = "YandexGPT не настроен"
             return None, None
 
         url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
@@ -202,8 +206,12 @@ class ToolCallingAgent:
                             pass
 
                     return None, raw_text
+            else:
+                logger.warning("YandexGPT HTTP %s: %s", resp.status_code, resp.text[:500])
+                self._llm_error = f"YandexGPT HTTP {resp.status_code}"
         except Exception as e:
             logger.warning("Agent LLM call error: %s", e)
+            self._llm_error = str(e)
 
         return None, None
 
@@ -235,6 +243,9 @@ class ToolCallingAgent:
         if direct_reply:
             self._record_turn(chat_id, message, direct_reply)
             return direct_reply
+
+        if self._llm_error:
+            return "Сервис обработки запросов временно недоступен. Проверьте настройки Yandex Cloud и попробуйте позже."
 
         return "Не удалось распознать команду. Чем я могу помочь?"
 

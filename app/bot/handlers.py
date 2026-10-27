@@ -14,6 +14,7 @@ from aiogram.types import (
 )
 
 from app.agent.agent import ToolCallingAgent
+from app.config import settings
 from app.orchestrator.dialogue import DialogueOrchestrator
 from app.speech.speechkit import YandexSpeechKitService
 
@@ -233,7 +234,11 @@ async def cmd_timezone(message: Message):
 async def on_set_timezone(callback: CallbackQuery):
     tz = callback.data.split(":", 1)[1]
     username = callback.from_user.username if callback.from_user else None
-    await orchestrator.db.set_user_timezone(callback.from_user.id, tz, username)
+    try:
+        await orchestrator.db.set_user_timezone(callback.from_user.id, tz, username)
+    except ValueError:
+        await callback.answer("Некорректный часовой пояс.", show_alert=True)
+        return
     await callback.answer("Часовой пояс обновлен!")
     if callback.message:
         await callback.message.edit_text(f"✅ Часовой пояс успешно изменен на `{tz}`.", parse_mode="Markdown")
@@ -260,10 +265,25 @@ async def on_task_done(callback: CallbackQuery):
 
 @router.message(F.voice)
 async def on_voice(message: Message, bot: Optional[Bot] = None):
+    duration = int(getattr(message.voice, "duration", 0) or 0)
+    file_size = int(getattr(message.voice, "file_size", 0) or 0)
+    if duration > settings.max_voice_duration_seconds or file_size > settings.max_voice_size_bytes:
+        await message.answer(
+            "Голосовое сообщение слишком длинное. "
+            f"Поддерживается до {settings.max_voice_duration_seconds} секунд "
+            f"и примерно {settings.max_voice_size_bytes / 1_000_000:.1f} МБ."
+        )
+        return
+
     await _send_action_safe(bot, message.chat.id, "record_voice")
     buf = io.BytesIO()
     if bot:
-        await bot.download(message.voice, destination=buf)
+        try:
+            await bot.download(message.voice, destination=buf)
+        except Exception as e:
+            logger.warning("Failed to download voice message: %s", e)
+            await message.answer("Не удалось загрузить голосовое сообщение, попробуйте ещё раз.")
+            return
     text = await stt.speech_to_text(buf.getvalue())
     if not text:
         await message.answer("Не удалось распознать голосовое сообщение, попробуйте ещё раз.")

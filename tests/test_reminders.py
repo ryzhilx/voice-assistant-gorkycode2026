@@ -87,6 +87,45 @@ class TestReminderWorker(unittest.IsolatedAsyncioTestCase):
         second_run = await check_and_send_reminders(self.mock_bot, self.db, now=fixed_now)
         self.assertEqual(second_run, 0)
 
+    async def test_failed_send_keeps_reminder_pending_for_retry(self):
+        task_id = await self.db.add_task(
+            user_id=123,
+            title="Позвонить в банк",
+            due_date="2026-10-18",
+            due_time="14:00",
+            is_reminder=True,
+        )
+        fixed_now = datetime.datetime(2026, 10, 18, 14, 5)
+
+        self.mock_bot.send_message = AsyncMock(side_effect=RuntimeError("telegram unavailable"))
+        first_run = await check_and_send_reminders(self.mock_bot, self.db, now=fixed_now)
+        self.assertEqual(first_run, 0)
+
+        pending = await self.db.get_due_tasks("2026-10-18", "14:05")
+        self.assertEqual([task["id"] for task in pending], [task_id])
+
+        self.mock_bot.send_message = AsyncMock()
+        second_run = await check_and_send_reminders(self.mock_bot, self.db, now=fixed_now)
+        self.assertEqual(second_run, 1)
+
+    async def test_failed_send_does_not_advance_recurring_task(self):
+        task_id = await self.db.add_task(
+            user_id=124,
+            title="Пить витамины",
+            due_date="2026-10-18",
+            due_time="09:00",
+            is_reminder=True,
+            recurrence="daily",
+        )
+        fixed_now = datetime.datetime(2026, 10, 18, 9, 5)
+
+        self.mock_bot.send_message = AsyncMock(side_effect=RuntimeError("telegram unavailable"))
+        await check_and_send_reminders(self.mock_bot, self.db, now=fixed_now)
+
+        rows = await self.db.get_all_records_for_search(124, "tasks")
+        self.assertEqual(rows[0]["date"], "2026-10-18")
+        self.assertEqual(rows[0]["id"], task_id)
+
     async def test_eastern_timezone_reminder_sent(self):
         await self.db.set_user_timezone(789, "Asia/Vladivostok")
         task_id = await self.db.add_task(

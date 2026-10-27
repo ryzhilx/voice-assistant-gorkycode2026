@@ -54,7 +54,8 @@ async def format_archive_view(db: Database, chat_id: int, filter_type: str = "al
         if filter_type == "all":
             lines.append("\nАрхивные задачи:")
         for t in tasks:
-            status = "[x]" if t.get("status") in ("completed", "archived") else "[ ]"
+            is_completed = t.get("status") == "completed" or bool(t.get("completed_at"))
+            status = "[x]" if is_completed else "[ ]"
             d_str = f" ({t.get('due_date')})" if t.get("due_date") else ""
             lines.append(f"• {status} {t.get('title')}{d_str}")
 

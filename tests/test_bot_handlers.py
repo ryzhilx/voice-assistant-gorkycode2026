@@ -2,6 +2,8 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.bot import handlers
+from app.bot.middleware import AccessMiddleware
+from app.config import settings
 from app.orchestrator.dialogue import Reply
 
 
@@ -65,6 +67,18 @@ class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
         self.orch.handle_text.assert_not_awaited()
         msg.answer.assert_awaited_once()
 
+    async def test_oversized_voice_is_rejected_before_download(self):
+        msg = make_message()
+        msg.voice.duration = 120
+        msg.voice.file_size = 5_000_000
+        bot = MagicMock(download=AsyncMock())
+
+        await handlers.on_voice(msg, bot)
+
+        bot.download.assert_not_awaited()
+        self.stt.speech_to_text.assert_not_awaited()
+        self.assertIn("слишком длинное", msg.answer.await_args.args[0])
+
 
     async def test_help_handler_sends_instructions(self):
         msg = make_message()
@@ -95,6 +109,30 @@ class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
         self.orch.reset.assert_called_once_with(7)
         cb.answer.assert_awaited_once_with("Диалог отменен")
         cb.message.edit_text.assert_awaited_once_with("Действие отменено. Чем могу помочь?")
+
+
+class TestAccessMiddleware(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.middleware = AccessMiddleware()
+        self.handler = AsyncMock()
+        self.event = MagicMock()
+        self.event.from_user.id = 42
+
+    async def test_allowlist_blocks_unknown_user(self):
+        with patch.object(settings, "allowed_user_ids", (1,)), patch.object(settings, "rate_limit_per_minute", 0):
+            await self.middleware(self.handler, self.event, {})
+        self.handler.assert_not_awaited()
+
+    async def test_allowlist_allows_known_user(self):
+        with patch.object(settings, "allowed_user_ids", (42,)), patch.object(settings, "rate_limit_per_minute", 0):
+            await self.middleware(self.handler, self.event, {})
+        self.handler.assert_awaited_once()
+
+    async def test_rate_limit_blocks_repeated_requests(self):
+        with patch.object(settings, "allowed_user_ids", ()), patch.object(settings, "rate_limit_per_minute", 1):
+            await self.middleware(self.handler, self.event, {})
+            await self.middleware(self.handler, self.event, {})
+        self.handler.assert_awaited_once()
 
 
 if __name__ == "__main__":

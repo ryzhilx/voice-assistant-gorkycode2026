@@ -5,14 +5,25 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 
 from app.bot.handlers import router
+from app.bot.middleware import AccessMiddleware
 from app.bot.reminders import start_reminder_worker
-from app.config import settings
+from app.config import settings, validate_settings
 
 
 async def main():
     logging.basicConfig(level=logging.INFO)
+
+    missing = validate_settings()
+    if missing:
+        raise RuntimeError(
+            "Не заданы обязательные переменные окружения: " + ", ".join(missing)
+        )
+
     bot = Bot(token=settings.telegram_bot_token)
     dp = Dispatcher()
+    access = AccessMiddleware()
+    dp.message.middleware(access)
+    dp.callback_query.middleware(access)
     dp.include_router(router)
 
     try:

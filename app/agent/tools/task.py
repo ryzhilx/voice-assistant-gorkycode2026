@@ -1,7 +1,15 @@
-import datetime
 from typing import Any, Dict
 from app.agent.schemas import ToolDefinition, ToolExecutionResult, ToolParameter
 from app.agent.tools.base import BaseTool
+from app.agent.tools.validation import (
+    ToolValidationError,
+    normalize_bool,
+    normalize_date,
+    normalize_recurrence,
+    normalize_time,
+    normalize_title,
+    today_in_timezone,
+)
 from app.orchestrator.formatters import format_recurrence
 from app.storage.db import Database
 
@@ -37,11 +45,25 @@ class CreateTaskTool(BaseTool):
         )
 
     async def execute(self, chat_id: int, **kwargs: Any) -> ToolExecutionResult:
-        title = kwargs.get("title", "Задача")
-        due_date = kwargs.get("due_date")
-        due_time = kwargs.get("due_time")
-        is_reminder = bool(kwargs.get("is_reminder", False))
-        recurrence = kwargs.get("recurrence")
+        try:
+            title = normalize_title(kwargs.get("title"), "Задача")
+            due_date = normalize_date(kwargs.get("due_date"))
+            due_time = normalize_time(kwargs.get("due_time"))
+            is_reminder = normalize_bool(kwargs.get("is_reminder"), False)
+            recurrence = normalize_recurrence(kwargs.get("recurrence"))
+
+            timezone = await self.db.get_user_timezone(chat_id)
+            if (is_reminder or recurrence) and not due_date:
+                due_date = today_in_timezone(timezone)
+
+            if is_reminder and not due_time:
+                return ToolExecutionResult(
+                    tool_name="create_task",
+                    success=False,
+                    output="Для напоминания нужно указать время. Например: «Напомни завтра в 10:00 позвонить врачу»."
+                )
+        except ToolValidationError as exc:
+            return ToolExecutionResult(tool_name="create_task", success=False, output=str(exc))
 
         task_id = await self.db.add_task(
             user_id=chat_id,
@@ -93,7 +115,7 @@ class CompleteTaskTool(BaseTool):
         )
 
     async def execute(self, chat_id: int, **kwargs: Any) -> ToolExecutionResult:
-        query = kwargs.get("query")
+        query = str(kwargs.get("query") or "").strip()
         record = None
 
         if query:
@@ -101,7 +123,7 @@ class CompleteTaskTool(BaseTool):
             if records:
                 pending_records = [r for r in records if r.get("status") not in ("completed", "archived")]
                 cands = pending_records if pending_records else records
-                matches = self.search_engine.rank_records(query, cands, top_k=1)
+                matches = await self.search_engine.rank_records_async(query, cands, top_k=1)
                 if matches:
                     record = matches[0]
 
@@ -124,7 +146,8 @@ class CompleteTaskTool(BaseTool):
 
         if success:
             if recurrence:
-                today_str = datetime.date.today().isoformat()
+                timezone = await self.db.get_user_timezone(chat_id)
+                today_str = today_in_timezone(timezone)
                 next_d = Database.calculate_next_occurrence(record.get("date") or today_str, recurrence, from_date=today_str)
                 self.last_event_store[chat_id] = {**record, "date": next_d, "status": "pending"}
                 return ToolExecutionResult(

@@ -1,3 +1,5 @@
+import asyncio
+import json
 import math
 import logging
 import re
@@ -13,6 +15,8 @@ class SemanticSearchEngine:
         self.yandex_folder_id = settings.yandex_folder_id
         self._http_client = http_client
         self._owns_client = False
+        self._embedding_cache: Dict[str, List[float]] = {}
+        self._embedding_semaphore = asyncio.Semaphore(5)
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._http_client is None or self._http_client.is_closed:
@@ -32,30 +36,39 @@ class SemanticSearchEngine:
         return re.sub(r'(?:ами|ями|иями|ов|ев|ей|ам|ям|иям|ом|ем|ой|ей|ею|ах|ях|иях|ую|юю|ая|яя|ое|ее|ые|ие|ый|ий|ой|ого|его|ому|ему|ым|им|ыми|ими|а|я|у|ю|о|е|ы|и|ь|й)$', '', w)
 
     async def get_embedding(self, text: str) -> List[float]:
-        if self.yandex_api_key and self.yandex_folder_id:
-            try:
-                emb = await self._get_yandex_embedding(text)
-                if emb:
-                    return emb
-            except Exception as e:
-                logger.warning("Failed to fetch Yandex embedding: %s", e)
+        remote = await self.get_remote_embedding(text, model="text-search-query")
+        if remote:
+            return remote
 
         return self._local_vectorize(text)
 
-    async def _get_yandex_embedding(self, text: str) -> Optional[List[float]]:
+    async def get_remote_embedding(self, text: str, model: str = "text-search-query") -> Optional[List[float]]:
+        if not (self.yandex_api_key and self.yandex_folder_id):
+            return None
+        try:
+            return await self._get_yandex_embedding(text, model=model)
+        except Exception as e:
+            logger.warning("Failed to fetch Yandex embedding: %s", e)
+            return None
+
+    async def _get_yandex_embedding(self, text: str, model: str = "text-search-query") -> Optional[List[float]]:
         url = "https://llm.api.cloud.yandex.net/foundationModels/v1/textEmbedding"
         headers = {
             "Authorization": f"Api-Key {self.yandex_api_key}",
             "x-folder-id": self.yandex_folder_id
         }
         payload = {
-            "modelUri": f"emb://{self.yandex_folder_id}/text-search-query/latest",
+            "modelUri": f"emb://{self.yandex_folder_id}/{model}/latest",
             "text": text
         }
         client = self._get_client()
         resp = await client.post(url, headers=headers, json=payload)
         if resp.status_code == 200:
-            return resp.json().get("embedding")
+            embedding = resp.json().get("embedding")
+            if isinstance(embedding, list) and embedding:
+                return embedding
+            return None
+        logger.warning("Yandex embedding error %s: %s", resp.status_code, resp.text)
         return None
 
     def _local_vectorize(self, text: str, dim: int = 256) -> List[float]:
@@ -117,20 +130,95 @@ class SemanticSearchEngine:
             return 0.0
         return dot / (norm_a * norm_b)
 
-    def rank_records(self, query: str, records: List[Dict[str, Any]], top_k: int = 3) -> List[Dict[str, Any]]:
-        if not query or not records:
-            return []
-
+    def _score_local(self, query: str, records: List[Dict[str, Any]]) -> List[tuple]:
         query_vec = self._local_vectorize(str(query))
         scored = []
 
         for rec in records:
-            emb = rec.get("embedding")
-            if not emb:
-                emb = self._local_vectorize(rec.get("title", ""))
-            score = self.cosine_similarity(query_vec, emb)
+            embedding = rec.get("embedding")
+            if isinstance(embedding, str):
+                try:
+                    embedding = json.loads(embedding)
+                except (TypeError, ValueError):
+                    embedding = None
+            if not isinstance(embedding, list) or not embedding:
+                embedding = self._local_vectorize(rec.get("title", ""))
+            score = self.cosine_similarity(query_vec, embedding)
             scored.append((score, rec))
 
         scored.sort(key=lambda x: x[0], reverse=True)
+        return scored
+
+    def rank_records(self, query: str, records: List[Dict[str, Any]], top_k: int = 3) -> List[Dict[str, Any]]:
+        if not query or not records:
+            return []
+
+        scored = self._score_local(query, records)
         return [item[1] for item in scored[:top_k] if item[0] > 0.20]
+
+    async def _document_embedding(self, record: Dict[str, Any]) -> Optional[List[float]]:
+        title = str(record.get("title") or "").strip()
+        if not title:
+            return None
+
+        embedding = record.get("embedding")
+        if isinstance(embedding, str):
+            try:
+                embedding = json.loads(embedding)
+            except (TypeError, ValueError):
+                embedding = None
+        if isinstance(embedding, list) and embedding:
+            return embedding
+
+        cached = self._embedding_cache.get(title)
+        if cached:
+            return cached
+
+        async with self._embedding_semaphore:
+            remote = await self.get_remote_embedding(title, model="text-search-doc")
+        if remote:
+            if len(self._embedding_cache) >= 512:
+                self._embedding_cache.pop(next(iter(self._embedding_cache)))
+            self._embedding_cache[title] = remote
+        return remote
+
+    async def rank_records_async(
+        self,
+        query: str,
+        records: List[Dict[str, Any]],
+        top_k: int = 3
+    ) -> List[Dict[str, Any]]:
+        if not query or not records:
+            return []
+
+        local_scored = self._score_local(query, records)
+        fallback = [item[1] for item in local_scored[:top_k] if item[0] > 0.20]
+
+        if not (self.yandex_api_key and self.yandex_folder_id):
+            return fallback
+
+        query_embedding = await self.get_remote_embedding(query, model="text-search-query")
+        if not query_embedding:
+            return fallback
+
+        candidate_limit = min(len(records), max(top_k * 5, 20))
+        candidates = local_scored[:candidate_limit]
+        document_embeddings = await asyncio.gather(
+            *[self._document_embedding(record) for _, record in candidates]
+        )
+
+        combined = []
+        for (local_score, record), document_embedding in zip(candidates, document_embeddings):
+            semantic_score = 0.0
+            if document_embedding:
+                semantic_score = max(
+                    0.0,
+                    self.cosine_similarity(query_embedding, document_embedding)
+                )
+            score = 0.5 * local_score + 0.5 * semantic_score
+            combined.append((score, record))
+
+        combined.sort(key=lambda item: item[0], reverse=True)
+        reranked = [item[1] for item in combined[:top_k] if item[0] > 0.20]
+        return reranked or fallback
 

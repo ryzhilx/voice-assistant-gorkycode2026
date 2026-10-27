@@ -1,9 +1,9 @@
 # Telegram Bot Framework
-aiogram>=3.31.0
+aiogram>=3.22.0,<3.23.0
 
 # HTTP & Async Network
 httpx>=0.28.1
 
-# Configuration
+# Configuration and timezones
 python-dotenv>=1.2.4
-dateparser>=1.2.0
+tzdata>=2024.1

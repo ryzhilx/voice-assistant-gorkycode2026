@@ -6,4 +6,4 @@ httpx>=0.28.1
 
 # Configuration and timezones
 python-dotenv>=1.2.4
-tzdata>=2024.1
+tzdata>=2026.5
